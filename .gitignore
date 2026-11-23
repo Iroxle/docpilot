@@ -1,0 +1,11 @@
+# Dependencies and tools (installed with npm install or provided locally)
+node_modules/
+.tools/
+
+# Generated files
+dist/
+release/
+
+# Windows
+Thumbs.db
+desktop.ini

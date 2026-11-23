@@ -1,0 +1,101 @@
+{
+  "name": "docpilot",
+  "productName": "DocPilot",
+  "version": "1.0.1",
+  "description": "DocPilot - view, edit, comment on and sign PDFs",
+  "author": "Iroxle",
+  "private": true,
+  "main": "electron/main.js",
+  "scripts": {
+    "build": "node scripts/build.js",
+    "start": "npm run build && electron .",
+    "lint": "eslint src electron scripts tests",
+    "test": "npm run build && node tests/run.js",
+    "icons": "electron scripts/make-icons.js",
+    "dist": "npm run build && electron-builder --win msi --x64",
+    "test:core": "node tests/run-core.js",
+    "notices": "node scripts/notices.js"
+  },
+  "devDependencies": {
+    "@cantoo/fontkit": "2.0.12",
+    "@cantoo/pdf-lib": "2.11.1",
+    "@tesseract.js-data/deu": "1.0.0",
+    "@tesseract.js-data/eng": "1.0.0",
+    "@tesseract.js-data/fra": "1.0.0",
+    "@tesseract.js-data/ita": "1.0.0",
+    "docx": "9.15.3",
+    "electron": "45.2.3",
+    "electron-builder": "26.18.0",
+    "esbuild": "0.28.2",
+    "eslint": "10.14.0",
+    "exceljs": "4.4.0",
+    "globals": "17.14.0",
+    "mammoth": "1.13.0",
+    "node-forge": "1.4.3",
+    "pdfjs-dist": "6.5.438",
+    "playwright-core": "1.65.0",
+    "pptxgenjs": "4.0.1",
+    "tesseract.js": "7.0.0",
+    "jszip": "3.10.2"
+  },
+  "build": {
+    "appId": "com.docpilot.app",
+    "productName": "DocPilot",
+    "copyright": "Copyright © 2026 Iroxle",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**/*",
+      "dist/renderer/**/*",
+      "assets/**/*",
+      "package.json",
+      "!dist/tests/**",
+      "!dist/shots/**"
+    ],
+    "asar": true,
+    "extraFiles": [
+      "LICENSE",
+      "THIRD_PARTY_NOTICES.md"
+    ],
+    "electronFuses": {
+      "runAsNode": false,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true
+    },
+    "win": {
+      "target": [
+        {
+          "target": "msi",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.ico",
+      "artifactName": "DocPilot-${version}-x64.${ext}"
+    },
+    "msi": {
+      "perMachine": true,
+      "oneClick": true,
+      "runAfterFinish": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "DocPilot",
+      "upgradeCode": "E1A8691B-2960-47E5-8330-BDBDA666DA63",
+      "additionalWixArgs": ["-ext", "WixUtilExtension"]
+    },
+    "msiProjectCreated": "scripts/msi-hook.js",
+    "fileAssociations": [
+      {
+        "ext": "pdf",
+        "name": "DocPilot.PDF",
+        "description": "PDF document",
+        "icon": "assets/icon.ico",
+        "role": "Editor"
+      }
+    ]
+  }
+}
