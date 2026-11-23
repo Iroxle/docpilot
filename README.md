@@ -142,7 +142,7 @@ msiexec /i DocPilot-1.0.1-x64.msi /qn
 
 ## Security
 
-- **JavaScript in PDFs and macros in Office files are permanently blocked.** Users cannot turn them on, not even through the settings file. Only IT can enable them through the policy `HKLM\SOFTWARE\Policies\DocPilot` (details in [FEATURES.md](FEATURES.md#it-policy-javascript-and-macros)).
+- **JavaScript in PDFs and macros in Office files are permanently blocked.** Users cannot turn them on, not even through the settings file. Only Administrators can enable them through the policy `HKLM\SOFTWARE\Policies\DocPilot` (details in [FEATURES.md](FEATURES.md#it-policy-javascript-and-macros)).
 - File attachments are never run, only saved. On its own, the program only opens folders, never files or programs.
 - Links only open web pages and email, after confirmation.
 - HTML is converted without JavaScript and without internet access.
