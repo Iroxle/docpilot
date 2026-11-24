@@ -242,7 +242,7 @@ Installers are built by GitHub Actions ([release.yml](.github/workflows/release.
 1. Set the new version in `package.json` and add a section for it to [CHANGELOG.md](CHANGELOG.md).
 2. Push to `main`.
 
-If there is no release for that version yet, the workflow runs all tests on Windows and macOS, builds the setup, the MSI, the portable version and the two Mac disk images, and publishes them as release `v<version>` with checksums. The release text is the changelog section of that version. Pushes to `main` that do not change the version do nothing. Pushes to other branches and pull requests run the tests and build everything without publishing. Running the workflow by hand ("Run workflow") does the same, optionally publishing a release.
+If there is no release for that version yet, the workflow runs the tests on Windows and macOS, builds the setup, the MSI, the portable version and the two Mac disk images, and publishes them as release `v<version>` with checksums. The release text is the changelog section of that version. A release is only published when the Windows tests pass; on macOS, failed tests are reported as warnings, because the app tests were written for Windows. Pushes to `main` that do not change the version do nothing. Pushes to other branches and pull requests run the tests and build everything without publishing. Running the workflow by hand ("Run workflow") does the same, optionally publishing a release.
 
 The Mac app is signed ad hoc. Once the repository has an Apple Developer ID certificate and an Apple ID as secrets (see the comment at the top of the workflow), it is signed and notarized by Apple, and the first-start step on the Mac is no longer needed.
 
