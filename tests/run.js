@@ -2074,11 +2074,18 @@ async function makeFixture(name, pages = 4) {
   });
 
   let failed = 0;
+  // A step that hangs (e.g. waiting for a dialog that never comes) fails after this time, and the run goes on.
+  const STEP_TIMEOUT = Number(process.env.DP_STEP_TIMEOUT) || 8 * 60000;
+  const limited = (p) => {
+    let timer;
+    const limit = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`Step timed out after ${STEP_TIMEOUT / 60000} minutes`)), STEP_TIMEOUT); });
+    return Promise.race([p, limit]).finally(() => clearTimeout(timer));
+  };
   for (const [name, fn] of steps) {
     if (only && !only.test(name)) { if (!/Home|Open via/.test(name)) continue; }
     const before = errors.length;
     try {
-      await fn();
+      await limited(fn());
       const newErr = errors.slice(before).filter((e) => !/Failed to load resource.*favicon/i.test(e));
       if (newErr.length) throw new Error(`Errors in the console:\n${newErr.join('\n')}`);
       console.log(`  OK     ${name}`);

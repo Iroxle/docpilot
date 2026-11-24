@@ -103,7 +103,7 @@ jobs:
     needs: check
     if: needs.check.outputs.build == 'true'
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 100
     defaults:
       run:
         shell: bash
@@ -128,6 +128,7 @@ jobs:
 
       - name: App tests
         if: ${{ !cancelled() }}
+        timeout-minutes: 50
         run: npm test 2>&1 | tee app-tests.log; exit "${PIPESTATUS[0]}"
 
       - name: Report test failures
@@ -154,7 +155,7 @@ jobs:
     needs: check
     if: needs.check.outputs.build == 'true'
     runs-on: macos-latest
-    timeout-minutes: 60
+    timeout-minutes: 100
     steps:
       - name: Check out the code
         uses: actions/checkout@v5
@@ -178,6 +179,7 @@ jobs:
       - name: App tests
         id: app
         continue-on-error: true
+        timeout-minutes: 50
         run: npm test 2>&1 | tee app-tests.log; exit "${PIPESTATUS[0]}"
 
       - name: Report test failures
