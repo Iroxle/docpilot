@@ -45,6 +45,7 @@ function buildMenu({ recent, send, openRecent, devtools }) {
         c('Snapshot', 'tool', undefined, 'snapshot'),
         sep,
         c('Find', 'find', 'CmdOrCtrl+F'),
+        c('Find and replace...', 'replace', 'CmdOrCtrl+Shift+H'),
         c('Advanced search', 'find-advanced', 'CmdOrCtrl+Shift+F'),
         sep,
         c('Preferences...', 'preferences', 'CmdOrCtrl+K'),

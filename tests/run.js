@@ -811,7 +811,7 @@ async function makeFixture(name, pages = 4) {
     await page.evaluate(async () => { const a = window.__app; a.settings = { ...a.settings, userName: '', links: 'ask', searchCase: false }; await a.saveSettings(); a.applySettings(); });
     await closeAll();
   });
-  step('Dark Windows mode: fields stay light and readable', async () => {
+  step('Appearance: Light stays light with dark Windows, Dark and Same as Windows take effect immediately', async () => {
     await page.emulateMedia({ colorScheme: 'dark' });
     await openFile(file('a.pdf'));
     await tool('note'); await clickAt(0, [400, 500]); await page.waitForSelector('.note-pop textarea');
@@ -830,8 +830,108 @@ async function makeFixture(name, pages = 4) {
     await page.evaluate(() => window.__app.viewer.setZoom('page')); await wait(300);
     assert.equal(await page.$eval('#page-controls select', (s) => s.options[s.selectedIndex]?.textContent), 'Fit page');
     await shot('21-dark-mode');
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), 'light', 'default "Light" also applies with dark Windows');
+    assert.equal(await app.evaluate(({ nativeTheme }) => nativeTheme.themeSource), 'light');
+    await page.keyboard.press('Escape'); await tool('select');
     await page.emulateMedia({ colorScheme: 'light' });
+
+    // --- "Appearance" choice under Preferences > General ---
+    // Measures the text color against the background behind it: brightness of the background (0 black, 1 white) and contrast.
+    const probe = (sels) => page.evaluate((list) => {
+      const parse = (c) => { const m = /rgba?\(([^)]+)\)/.exec(c); if (!m) return [0, 0, 0, 1]; const p = m[1].split(/[\s,/]+/).filter(Boolean).map(Number); return [p[0], p[1], p[2], p.length > 3 ? p[3] : 1]; };
+      const lum = ([r, g, b]) => { const f = (v) => { const x = v / 255; return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4; }; return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b); };
+      const bgOf = (el) => { for (let e = el; e; e = e.parentElement) { const c = parse(getComputedStyle(e).backgroundColor); if (c[3] > 0.95) return c; } return [255, 255, 255, 1]; };
+      return list.map((sel) => { const el = document.querySelector(sel); if (!el) return { sel, missing: true }; const a = lum(parse(getComputedStyle(el).color)); const b = lum(bgOf(el)); return { sel, bg: Math.round(b * 1000) / 1000, contrast: Math.round(((Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05)) * 10) / 10 }; });
+    }, sels);
+    const allDark = async (what, sels, min = 4.5) => { for (const r of await probe(sels)) { assert.ok(!r.missing, `${what}: ${r.sel} vorhanden`); assert.ok(r.bg < 0.12, `${what}: ${r.sel} is dark (brightness ${r.bg})`); assert.ok(r.contrast >= min, `${what}: ${r.sel} is readable (contrast ${r.contrast})`); } };
+    const setAppearance = async (v) => {
+      await run('preferences'); await page.waitForSelector('.dlg.pref [data-pref="appearance"]');
+      await page.selectOption('.dlg.pref [data-pref="appearance"]', v);
+      await page.click('.dlg.pref [data-ok]'); await wait(250);
+    };
+    assert.equal(await page.evaluate(() => window.__app.settings.appearance), 'light', 'default stays Light');
+    await run('preferences'); await page.waitForSelector('.dlg.pref [data-pref="appearance"]');
+    assert.deepEqual(await page.$$eval('.dlg.pref [data-pref="appearance"] option', (o) => o.map((x) => x.textContent)), ['Light', 'Dark', 'Same as Windows']);
+    await page.click('.dlg.pref .btn:not(.primary)'); await wait(100);
+
+    // Dark: takes effect immediately, without a restart.
+    await setAppearance('dark');
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), 'dark');
+    assert.deepEqual(await app.evaluate(({ nativeTheme }) => [nativeTheme.themeSource, nativeTheme.shouldUseDarkColors]), ['dark', true], 'menu bar and window frame follow');
+    assert.equal((await page.evaluate(() => window.dp.settingsGet())).appearance, 'dark', 'gespeichert');
+    // Dokumentansicht: Tabs, Werkzeugleiste, Werkzeugfenster, Seitenleiste, Seitensteuerung.
+    await group('edit'); await page.waitForSelector('.eb'); await wait(200);
+    await allDark('document view', ['#topbar .brand span', '#tabs .tab.active', '#doc-toolbar .gb', '#left-panel .lp-head', '#left-panel .lp-item', '#left-panel .lp-sub', '#page-controls input', '#page-controls select', '#page-controls .of', '.cm .au', '.cm .act input']);
+    await allDark('icons', ['#right-rail .ib:not(.active)', '#quick-tools .ib:not(.active)', '#left-panel .lp-item .ic'], 3);
+    // The page stays white like paper, only the background around the page is dark.
+    const paper = await page.evaluate(() => { const n = window.__app.viewer.node(0); const d = n.canvas.getContext('2d').getImageData(6, 6, 1, 1).data; const lumOf = (c) => { const m = /rgba?\(([^)]+)\)/.exec(c)[1].split(/[\s,/]+/).map(Number); return (0.2126 * m[0] + 0.7152 * m[1] + 0.0722 * m[2]) / 255; }; return { page: getComputedStyle(n.el).backgroundColor, pixel: [d[0], d[1], d[2]], around: lumOf(getComputedStyle(document.querySelector('#viewer-wrap')).backgroundColor) }; });
+    assert.equal(paper.page, 'rgb(255, 255, 255)', 'page stays white'); assert.deepEqual(paper.pixel, [255, 255, 255], 'paper in the page image is white');
+    assert.ok(paper.around < 0.12, `background around the page is dark: ${paper.around}`);
+    // What lies on the page stays light: form field and the frame while editing.
+    await page.evaluate(() => window.__app.tools.closeGroup()); await rendered(); await wait(300);
+    const onPage = await page.$eval('.annotationLayer input', (e) => { const c = getComputedStyle(e); const n = (x) => /rgba?\(([^)]+)\)/.exec(x)[1].split(/[\s,/]+/).map(Number); return { bg: n(c.backgroundColor), fg: n(c.color) }; });
+    assert.ok(onPage.fg[0] < 90 && (onPage.bg[3] === 0 || onPage.bg[0] > 200), `form field on the page stays light with dark text: ${JSON.stringify(onPage)}`);
+    // Font picker, find bar, message, context menu.
+    await group('edit'); await page.waitForSelector('.eb'); await wait(200);
+    await run('find'); await page.waitForSelector('#findbar:not([hidden])');
+    await page.evaluate(() => window.__app.find.showReplace(true));
+    await allDark('find bar', ['#findbar input[type=text]', '#findbar label', '#findbar .row.rep .btn']);
+    await page.evaluate(() => window.__app.find.close());
+    const [bx, by] = await pagePt(0, 150, 704);
+    await page.mouse.dblclick(bx, by); await page.waitForSelector('.eb-frame .eb-input');
+    const edit = await page.$eval('.eb-input', (e) => getComputedStyle(e).backgroundColor);
+    assert.equal(edit, 'rgb(255, 255, 255)', 'input field on the page stays white');
+    await page.click('#propbar .fp-arrow'); await page.waitForSelector('.fp-pop .fp-item');
+    await allDark('font picker', ['#propbar .fp-input', '.fp-pop .fp-head', '.fp-pop .fp-item', '#propbar label']);
+    await shot('21-dark-edit');
+    await page.keyboard.press('Escape'); await page.keyboard.press('Escape'); await wait(150);
+    await page.evaluate(() => { window.__app.editor.cancelInput?.(); window.__app.tools.closeGroup(); });
+    // Dialogs and messages.
+    await run('preferences'); await page.waitForSelector('.dlg.pref');
+    await allDark('Preferences', ['.dlg.pref h3', '.pref-cat', '.pref-cat.active', '.pref-lbl span', '.pref-lbl select', '.pref-help', '.dlg .f .btn:not(.primary)']);
+    await page.click('.pref-cat[data-cat="identity"]');
+    await allDark('input fields', ['.pref-lbl input']);
+    await page.click('.pref-cat[data-cat="js"]');
+    await allDark('Option', ['.pref-chk span']);
+    if (await page.$('.pref-lock')) await allDark('locked option', ['.pref-lock']);
+    await shot('21-dark-preferences');
+    await page.click('.dlg.pref .btn:not(.primary)'); await wait(100);
+    await page.evaluate(() => { window.__app.tools.encryptDialog(); }); await page.waitForSelector('.scrim .fr input');
+    await allDark('Dialog', ['.dlg h3', '.fr > span', '.fr input', '.fr select']);
+    await page.click('.scrim .btn:not(.primary)'); await wait(100);
+    await page.evaluate(() => { window.__app.run('redo'); }); await page.waitForSelector('.toast');
+    await allDark('message', ['.toast:not(.ok):not(.err)']);
+    // Home page and "All tools".
+    await page.evaluate(() => window.__app.showHome()); await wait(500);
+    await allDark('home page', ['.home-hero h1', '.home-hero p', '.tool-card b', '.tool-card small', 'h2.sec']);
+    await allDark('home page, icon', ['.tool-card .tc-ic'], 3);
+    if (await page.$('.recent .row')) await allDark('Recently opened', ['.recent .row', '.recent .row .p']);
+    const logo = await page.$eval('.home-hero img', (e) => getComputedStyle(e).backgroundColor);
+    assert.equal(logo, 'rgb(255, 255, 255)', 'logo sits on a light plate');
+    await shot('21-dark-home');
+    await page.evaluate(() => window.__app.showTools()); await wait(400);
+    await allDark('All tools', ['#view-tools .tool-card b', '#view-tools .tool-card small']);
+    await page.evaluate(() => window.__app.setView('doc')); await wait(300);
+
+    // Same as Windows: follows the Windows mode, even if it changes while the program is running.
+    await setAppearance('system');
+    assert.equal(await app.evaluate(({ nativeTheme }) => nativeTheme.themeSource), 'system');
+    await page.emulateMedia({ colorScheme: 'dark' }); await wait(150);
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), 'dark', 'Same as Windows, Windows dark');
+    await page.emulateMedia({ colorScheme: 'light' }); await wait(150);
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), 'light', 'Same as Windows, Windows light');
+    // Back to light: everything as before, also with dark Windows.
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await setAppearance('light');
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), 'light');
+    assert.equal(await app.evaluate(({ nativeTheme }) => nativeTheme.themeSource), 'light');
+    const back = await page.$eval('#page-controls input', (e) => getComputedStyle(e).backgroundColor);
+    assert.equal(back, 'rgb(255, 255, 255)', 'Light: fields white again');
+    assert.equal(await page.$eval('#topbar', (e) => getComputedStyle(e).backgroundColor), 'rgb(255, 255, 255)');
+    await page.emulateMedia({ colorScheme: null });
     await closeAll();
+    // With the document, the note window that belonged to it closes too.
+    assert.equal(await page.$('.note-pop'), null, 'no note window stays open after closing');
   });
   step('JavaScript in forms: off blocks, on calculates', async () => {
     const { PDFName, PDFString } = require('@cantoo/pdf-lib');
@@ -1270,7 +1370,7 @@ async function makeFixture(name, pages = 4) {
     }
     await idle(); await wait(300);
     const t = (await page.evaluate(async () => (await window.__app.doc.pageText(0)).items.map((x) => x.str).join(' '))).replace(/\s+/g, ' ');
-    for (const w of ['Geprüft', 'Beträge.', 'Schriftgrösse:', '±4 %', 'Kern-Tests', '1480.00', 'gespeicherten', 'Briefkopf']) assert.ok(t.includes(w), `"${w}" recognized: ${t}`);
+    for (const w of ['Geprüft', 'Beträge.', 'Schriftgrösse:', '±4 %', 'core tests', '1480.00', 'gespeicherten', 'Briefkopf']) assert.ok(t.includes(w), `"${w}" recognized: ${t}`);
     assert.equal((t.match(/•/g) || []).length, 3, `three bullet points: ${t}`);
     assert.equal((t.match(/◦/g) || []).length, 2, `two sub-points: ${t}`);
 
@@ -1386,6 +1486,578 @@ async function makeFixture(name, pages = 4) {
     await app.evaluate(async ({ clipboard }) => { await clipboard.writeText('text only'); });
     await page.mouse.click(cx, cy); await page.keyboard.press('Control+V'); await wait(800);
     assert.equal(await page.evaluate(() => window.__app.doc.undoStack.length), n0, 'no image pasted');
+    await closeAll();
+  });
+  step('Find and replace: one, all, undo, paragraph reflows, recognized text in a scan', async () => {
+    const { degrees } = require('@cantoo/pdf-lib');
+    const OLD = 'Nordwind Handels AG'; const NEW = 'Südlicht Logistik und Handel GmbH';
+    const d = await PDFDocument.create(); const f = await d.embedFont(StandardFonts.Helvetica); const fb = await d.embedFont(StandardFonts.HelveticaBold);
+    const p1 = d.addPage([595, 842]);
+    p1.drawText(`Angebot 2024 für die ${OLD}`, { x: 72, y: 770, size: 18, font: fb, color: rgb(0.1, 0.3, 0.6) });
+    // Running text: the name spans a line break.
+    const para = ['Die Zusammenarbeit mit der Nordwind Handels', 'AG besteht seit dem Jahr 2024 und umfasst die', 'regelmässige Lieferung von Ersatzteilen sowie', 'die Wartung der Anlagen am Standort.'];
+    para.forEach((t, k) => p1.drawText(t, { x: 72, y: 720 - k * 15, size: 11, font: f }));
+    const colRight = 72 + Math.max(...para.map((t) => f.widthOfTextAtSize(t, 11)));
+    p1.drawText(`Kunde: ${OLD}`, { x: 72, y: 620, size: 11, font: f });
+    p1.drawText('Auftrag 20241', { x: 72, y: 600, size: 11, font: f });
+    // Rotated text at the edge: cannot be replaced and must be reported.
+    p1.drawText(OLD, { x: 560, y: 300, size: 10, font: f, rotate: degrees(90) });
+    const p2 = d.addPage([595, 842]);
+    p2.drawText('Bedingungen', { x: 72, y: 770, size: 18, font: fb });
+    p2.drawText(`Die ${OLD} haftet nicht für Verzögerungen.`, { x: 72, y: 720, size: 11, font: f });
+    p2.drawText('Kontakt: info at nordwind handels ag', { x: 72, y: 690, size: 11, font: f });
+    fs.writeFileSync(file('ersetzen.pdf'), await d.save());
+    // Before this, "Edit PDF" was open in another document: its text blocks must not play any role here.
+    await openFile(await makeFixture('ersetzen-vorher.pdf', 1)); await group('edit'); await page.waitForSelector('.eb'); await wait(200);
+    await closeAll();
+    await openFile(file('ersetzen.pdf'));
+
+    const SEARCH = '#findbar .row:not(.rep) input[type=text]'; const REPL = '#findbar .row.rep input[type=text]';
+    const cnt = (re) => page.waitForFunction((src) => new RegExp(src).test(document.querySelector('#findbar .cnt').textContent), re.source, { timeout: 30000 });
+    const docText = () => page.evaluate(async () => { const a = window.__app.doc; let t = ''; for (let i = 0; i < a.numPages; i++) t += `${(await a.pageText(i)).items.map((x) => x.str + (x.hasEOL ? ' ' : '')).join('')}\n`; return t.replace(/[ \t]+/g, ' '); });
+    const times = (t, s) => t.toLowerCase().split(s.toLowerCase()).length - 1;
+    const undoN = () => page.evaluate(() => window.__app.doc.undoStack.length);
+    const blockOf = (i, re) => page.evaluate(async ([n, src]) => { const r = new RegExp(src); const o = (await window.__app.editor.objects(n)).find((x) => x.kind === 'text' && r.test(x.text)); return o ? { text: o.text, size: o.size, bold: !!o.bold, color: o.color, ocr: !!o.ocr, lines: o.lines.map((l) => ({ text: l.text, x0: l.x0, x1: l.x1 })) } : null; }, [i, re.source]);
+
+    // 1. Open the bar with the "Replace with" row, search.
+    await run('replace');
+    await page.waitForSelector('#findbar .row.rep:not([hidden])');
+    await page.fill(SEARCH, OLD);
+    await cnt(/^1 of 6$/);
+    await page.fill(REPL, NEW);
+
+    // 2. Replace one: the highlighted result (heading) is replaced; font, size and color stay.
+    let u = await undoN();
+    await page.click('#findbar [data-act=replace]');
+    await cnt(/of 5$/);
+    assert.equal(await undoN(), u + 1, 'replacing is one step');
+    const head = await blockOf(0, /^Angebot 2024/);
+    assert.ok(head && head.text === `Angebot 2024 für die ${NEW}`, `heading replaced: ${JSON.stringify(head)}`);
+    assert.ok(Math.abs(head.size - 18) < 0.2 && head.bold, `size and bold stay: ${head.size}, ${head.bold}`);
+    assert.ok(head.color[2] > 0.5 && head.color[0] < 0.2, `color stays: ${head.color}`);
+    await shot('ersetzen-einzeln');
+
+    // 3. Undo: the result is back, the counter is right again.
+    await run('undo');
+    await cnt(/of 6$/);
+
+    // 4. Replace all: the count first, then the message with the position that did not work (rotated text).
+    u = await undoN();
+    await page.click('#findbar [data-act=replace-all]');
+    await page.waitForSelector('.scrim .dlg');
+    let msg = await page.$eval('.scrim .dlg', (e) => e.textContent);
+    assert.ok(/6 results/.test(msg) && msg.includes(NEW), `confirmation states the count: ${msg}`);
+    await page.click('.scrim .btn.primary');
+    await page.waitForFunction(() => /were replaced/.test(document.querySelector('.scrim .dlg')?.textContent || ''), null, { timeout: 60000 });
+    msg = await page.$eval('.scrim .dlg', (e) => e.textContent);
+    assert.ok(/5 of 6 results were replaced/.test(msg), `message states the count: ${msg}`);
+    assert.ok(/Not replaced \(1\)/.test(msg) && /Page 1/.test(msg) && /rotated/.test(msg), `message states the position and the reason: ${msg}`);
+    await page.click('.scrim .btn.primary'); await wait(300);
+    assert.equal(await undoN(), u + 1, '"Replace all" is a single step for undo');
+    let t = await docText();
+    assert.equal(times(t, NEW), 5, `five positions replaced: ${t}`);
+    assert.equal(times(t, OLD), 1, `only the rotated text stays: ${t}`);
+
+    // 5. The paragraph has reflowed: same wording, no line extends beyond the column.
+    await rendered();
+    const par = await blockOf(0, /^Die Zusammenarbeit/);
+    assert.ok(par, 'paragraph found');
+    assert.equal(par.lines.map((l) => l.text).join(' '), `Die Zusammenarbeit mit der ${NEW} besteht seit dem Jahr 2024 und umfasst die regelmässige Lieferung von Ersatzteilen sowie die Wartung der Anlagen am Standort.`);
+    assert.ok(par.lines.length >= 5, `paragraph has one more line: ${par.lines.length}`);
+    for (const l of par.lines) assert.ok(l.x1 <= colRight + 8 && Math.abs(l.x0 - 72) < 1, `line stays in the column (${Math.round(colRight)}): ${JSON.stringify(l)}`);
+    assert.ok(Math.abs(par.size - 11) < 0.2, `font size of the paragraph stays: ${par.size}`);
+    // A single line stays one line.
+    const kunde = await blockOf(0, /^Kunde:/);
+    assert.ok(kunde && kunde.lines.length === 1 && kunde.text === `Kunde: ${NEW}`, `line "Kunde": ${JSON.stringify(kunde)}`);
+    await shot('ersetzen-alle');
+
+    // 6. The saved file contains the same (real change in the page content).
+    const saved = await allText(await open(await saveAs('ersetzen-neu.pdf')));
+    assert.equal(times(saved.replace(/\s+/g, ' '), NEW), 5, `file: ${saved}`);
+    assert.equal(times(saved.replace(/\s+/g, ' '), OLD), 1, `file, old name: ${saved}`);
+    // The old page content is also no longer in the file as an unused object.
+    const { PDFRawStream, decodePDFRawStream } = require('@cantoo/pdf-lib');
+    const hex = Buffer.from('Kunde: Nordwind', 'latin1').toString('hex').toUpperCase();
+    const streamsWith = async (name) => {
+      const raw = await PDFDocument.load(fs.readFileSync(file(name)));
+      let n = 0;
+      for (const [, o] of raw.context.enumerateIndirectObjects()) {
+        if (!(o instanceof PDFRawStream)) continue;
+        let txt = ''; try { txt = Buffer.from(decodePDFRawStream(o).decode()).toString('latin1'); } catch { continue; }
+        if (txt.toUpperCase().includes(hex) || txt.includes('Kunde: Nordwind')) n++;
+      }
+      return n;
+    };
+    assert.equal(await streamsWith('ersetzen.pdf'), 1, 'cross-check: in the original the text is in the page content');
+    assert.equal(await streamsWith('ersetzen-neu.pdf'), 0, 'replaced text is removed from the file, not just hidden');
+
+    // 7. One "Undo" step takes everything back.
+    await run('undo'); await wait(600);
+    t = await docText();
+    assert.equal(times(t, OLD), 6, `everything back: ${t}`); assert.equal(times(t, NEW), 0);
+
+    // 8. Whole word: "2024" does not match "20241".
+    await page.fill(SEARCH, '2024'); await cnt(/of 3$/);
+    await page.setChecked('#findbar input[data-opt="wholeWord"]', true); await cnt(/of 2$/);
+    await page.fill(REPL, '2025');
+    await page.click('#findbar [data-act=replace-all]');
+    await page.waitForSelector('.scrim .dlg'); await page.click('.scrim .btn.primary');
+    await page.waitForFunction(() => /were replaced/.test(document.querySelector('.scrim .dlg')?.textContent || ''), null, { timeout: 60000 });
+    msg = await page.$eval('.scrim .dlg', (e) => e.textContent);
+    assert.ok(/All 2 results were replaced/.test(msg) && !/Not replaced/.test(msg), `message: ${msg}`);
+    await page.click('.scrim .btn.primary'); await wait(300);
+    t = await docText();
+    assert.ok(t.includes('Auftrag 20241') && t.includes('Angebot 2025') && t.includes('Jahr 2025') && !/\b2024\b/.test(t), `whole word: ${t}`);
+    await page.setChecked('#findbar input[data-opt="wholeWord"]', false);
+    // Match case: only the exact spelling.
+    await page.fill(SEARCH, 'nordwind'); await cnt(/of 6$/);
+    await page.setChecked('#findbar input[data-opt="caseSensitive"]', true); await cnt(/^1 of 1$/);
+    await page.setChecked('#findbar input[data-opt="caseSensitive"]', false); await cnt(/of 6$/);
+
+    // 9. The replacement text contains the search term: each position is replaced only once, also when clicking through.
+    await page.fill(SEARCH, 'Nordwind'); await cnt(/of 6$/);
+    await page.fill(REPL, 'Nordwind Nord');
+    // The rotated text is skipped with a notice.
+    const left = () => page.$eval('#findbar .cnt', (e) => Number((/of (\d+)/.exec(e.textContent) || [0, 0])[1]));
+    for (let k = 0; k < 8 && (await left()) > 3; k++) {
+      await page.click('#findbar [data-act=replace]'); await wait(250);
+      await page.waitForFunction(() => !window.__app.find.own, null, { timeout: 30000 }); await wait(250);
+    }
+    assert.equal(await left(), 3, 'three results remain');
+    t = await docText();
+    assert.equal(times(t, 'Nordwind Nord'), 3, `three positions replaced: ${t}`);
+    assert.equal(times(t, 'Nord Nord'), 0, `no position replaced twice: ${t}`);
+    await page.keyboard.press('Escape');
+    await page.evaluate(() => window.__app.find.close());
+    await closeAll();
+
+    // 10. Recognized text in a scan: old letters disappear from the image, the new text is there.
+    const s = await PDFDocument.create(); const sf = await s.embedFont(StandardFonts.Helvetica); const sb = await s.embedFont(StandardFonts.HelveticaBold);
+    const sp = s.addPage([595, 842]);
+    sp.drawText('Lieferschein Nr. 4711', { x: 60, y: 740, size: 16, font: sb });
+    sp.drawText('Montage der Anlage in Halle 3', { x: 60, y: 690, size: 12, font: sf });
+    sp.drawText('Abnahme nach der Montage durch den Kunden', { x: 60, y: 660, size: 12, font: sf });
+    fs.writeFileSync(file('lieferschein-original.pdf'), await s.save());
+    await openFile(file('lieferschein-original.pdf'));
+    const jpg = await page.evaluate(async () => { const { canvas } = await window.__app.viewer.renderToCanvas(0, 200, { noAnnots: true }); const b = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', 0.9)); return Array.from(new Uint8Array(await b.arrayBuffer())); });
+    fs.writeFileSync(file('lieferschein.jpg'), Uint8Array.from(jpg));
+    await closeAll();
+    await setDialogs({ open: [file('lieferschein.jpg')] });
+    await page.evaluate(() => window.__app.tools.createFromFile());
+    await page.waitForFunction(() => window.__app.doc?.name === 'lieferschein.pdf');
+    await page.evaluate(() => window.__app.doc.scanCheck); await idle(); await wait(300); await rendered();
+    t = await docText();
+    assert.equal(times(t, 'Montage'), 2, `scan recognized: ${t}`);
+    const dark = (re) => page.evaluate(async (src) => {
+      const r = new RegExp(src); const v = window.__app.viewer; const n = v.node(0);
+      const o = (await window.__app.editor.objects(0)).find((x) => x.kind === 'text' && r.test(x.text));
+      const css = v.rectToCss(0, o.rect); const k = n.canvas.width / n.el.clientWidth;
+      const data = n.canvas.getContext('2d').getImageData(Math.round(css.left * k), Math.round(css.top * k), Math.max(1, Math.round(css.width * k)), Math.max(1, Math.round(css.height * k))).data;
+      let c = 0; for (let q = 0; q < data.length; q += 4) if (data[q] < 110) c++;
+      return { dark: c, width: o.rect[2] - o.rect[0] };
+    }, re.source);
+    const before = await dark(/^Montage der Anlage/);
+    await run('replace'); await page.fill(SEARCH, 'Montage'); await cnt(/of 2$/);
+    await page.fill(REPL, 'Inbetriebnahme');
+    u = await undoN();
+    await page.click('#findbar [data-act=replace-all]');
+    await page.waitForSelector('.scrim .dlg'); await page.click('.scrim .btn.primary');
+    await page.waitForFunction(() => /were replaced/.test(document.querySelector('.scrim .dlg')?.textContent || ''), null, { timeout: 60000 });
+    msg = await page.$eval('.scrim .dlg', (e) => e.textContent);
+    assert.ok(/All 2 results were replaced/.test(msg), `scan, message: ${msg}`);
+    await page.click('.scrim .btn.primary'); await wait(300);
+    assert.equal(await undoN(), u + 1, 'scan: one step');
+    await rendered(); await wait(300);
+    t = await docText();
+    assert.ok(times(t, 'Inbetriebnahme') === 2 && times(t, 'Montage') === 0, `scan replaced: ${t}`);
+    const line = await blockOf(0, /^Inbetriebnahme der Anlage/);
+    if (!line) console.log('         Blocks: ' + JSON.stringify(await page.evaluate(async () => (await window.__app.editor.objects(0)).map((x) => [x.kind, x.text, x.ocr, x.size && Math.round(x.size * 10) / 10, x.rect.map(Math.round)]))));
+    assert.ok(line && !line.ocr && Math.abs(line.size - 12) < 1.6, `new text is visible text of similar size: ${JSON.stringify(line)}`);
+    // The line has become longer and carries text only once: if the old letters were still in the image, there would be
+    // clearly more black there than the longer word explains.
+    const after = await dark(/^Inbetriebnahme der Anlage/);
+    assert.ok(after.width > before.width, `line is longer: ${before.width} -> ${after.width}`);
+    assert.ok(after.dark < before.dark * (after.width / before.width) * 1.35, `old letters removed from the image: ${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
+    await shot('ersetzen-scan');
+    await page.evaluate(() => window.__app.find.close());
+    await closeAll();
+  });
+  step('Detect form fields automatically: preview, deselect, create, undo, scanned form', async () => {
+    // Erfundenes Anmeldeformular.
+    const d = await PDFDocument.create(); const f = await d.embedFont(StandardFonts.Helvetica); const fb = await d.embedFont(StandardFonts.HelveticaBold);
+    const p = d.addPage([595, 842]); const black = rgb(0, 0, 0);
+    const line = (x0, y0, x1, y1, t = 0.9) => p.drawLine({ start: { x: x0, y: y0 }, end: { x: x1, y: y1 }, thickness: t, color: black });
+    p.drawText('Anmeldung zum Kurs', { x: 60, y: 780, size: 18, font: fb }); line(60, 772, 535, 772, 1.2);
+    p.drawText('Name:', { x: 60, y: 730, size: 12, font: f }); line(140, 728, 340, 728);
+    p.drawText('Vorname:', { x: 60, y: 702, size: 12, font: f }); line(140, 700, 340, 700);
+    p.drawText('Telefon: ____________________', { x: 60, y: 672, size: 12, font: f });
+    p.drawRectangle({ x: 60, y: 636, width: 11, height: 11, borderColor: black, borderWidth: 1 }); p.drawText('Newsletter', { x: 78, y: 637, size: 12, font: f });
+    p.drawRectangle({ x: 220, y: 636, width: 11, height: 11, borderColor: black, borderWidth: 1 }); p.drawText('Parkplatz', { x: 238, y: 637, size: 12, font: f });
+    p.drawText('Verpflegung:', { x: 60, y: 603, size: 12, font: f });
+    p.drawCircle({ x: 160, y: 607, size: 5.5, borderColor: black, borderWidth: 1 }); p.drawText('Fleisch', { x: 171, y: 603, size: 12, font: f });
+    p.drawCircle({ x: 250, y: 607, size: 5.5, borderColor: black, borderWidth: 1 }); p.drawText('Vegetarisch', { x: 261, y: 603, size: 12, font: f });
+    p.drawText('Bemerkungen', { x: 60, y: 560, size: 12, font: f });
+    p.drawRectangle({ x: 60, y: 490, width: 320, height: 62, borderColor: black, borderWidth: 1 });
+    line(60, 380, 250, 380); p.drawText('Ort, Datum', { x: 60, y: 367, size: 9, font: f });
+    line(310, 380, 520, 380); p.drawText('Unterschrift', { x: 310, y: 367, size: 9, font: f });
+    fs.writeFileSync(file('formular-leer.pdf'), await d.save());
+    // The same page with a field that already exists.
+    d.getForm().createTextField('Vorname').addToPage(p, { x: 140, y: 701, width: 200, height: 15, font: f });
+    fs.writeFileSync(file('formular.pdf'), await d.save());
+    await openFile(file('formular.pdf'));
+    await group('form'); await wait(200);
+
+    const boxes = () => page.$$eval('.fd-box', (els) => els.map((e) => ({ name: e.dataset.name, type: e.dataset.type, off: e.classList.contains('off') })));
+    const undoN = () => page.evaluate(() => window.__app.doc.undoStack.length);
+    const fieldsOf = async (bytes) => { const x = await PDFDocument.load(bytes); return x.getForm().getFields().map((q) => `${q.constructor.name.replace('PDF', '')}:${q.getName()}`).sort(); };
+    const detect = async () => {
+      await page.click('#left-panel >> text=Detect fields automatically');
+      await page.waitForSelector('.scrim [data-field="range"]');
+      await ok();
+    };
+
+    // 1. Detect: preview on the page, nothing created yet.
+    const u0 = await undoN(); const bytes0 = await page.evaluate(() => window.__app.doc.bytes.length);
+    await detect();
+    await page.waitForSelector('.fd-box'); await page.waitForSelector('#detectbar');
+    let b = await boxes();
+    const names = b.map((x) => `${x.type}:${x.name}`).sort();
+    assert.deepEqual(names, ['checkbox:Newsletter', 'checkbox:Parkplatz', 'multiline:Bemerkungen', 'radio:Verpflegung', 'radio:Verpflegung', 'signature:Unterschrift', 'text:Name', 'text:Ort, Datum', 'text:Telefon'], `detected fields: ${names.join(' | ')}`);
+    assert.ok(!names.some((n) => /Vorname/.test(n)), 'the existing field "Vorname" is not suggested again');
+    assert.ok(/9 fields detected, 9 selected/.test(await page.$eval('#detectbar', (e) => e.textContent)));
+    assert.equal(await undoN(), u0, 'nothing is changed before confirming');
+    assert.equal(await page.evaluate(() => window.__app.doc.bytes.length), bytes0);
+    // The preview lies on the line: the box "Name" starts at the line and ends at it.
+    const nameBox = await page.$eval('.fd-box[data-name="Name"]', (e) => { const r = e.getBoundingClientRect(); return [r.left, r.right, r.bottom]; });
+    const [lx0, ly] = await pagePt(0, 140, 728); const [lx1] = await pagePt(0, 340, 728);
+    assert.ok(Math.abs(nameBox[0] - lx0) < 3 && Math.abs(nameBox[1] - lx1) < 3 && Math.abs(nameBox[2] - ly) < 4, `preview lies on the line: ${nameBox} / ${lx0}, ${lx1}, ${ly}`);
+    await shot('felder-vorschau');
+
+    // 2. Deselect one field, then create.
+    await page.click('.fd-box[data-name="Parkplatz"]');
+    await page.waitForSelector('.fd-box.off[data-name="Parkplatz"]');
+    assert.ok(/9 fields detected, 8 selected/.test(await page.$eval('#detectbar', (e) => e.textContent)));
+    assert.equal(await page.$eval('#detectbar [data-act=apply]', (e) => e.textContent), 'Create 8 fields');
+    await page.click('#detectbar [data-act=apply]');
+    await page.waitForFunction(() => !document.querySelector('.fd-box') && !document.querySelector('#detectbar'), null, { timeout: 30000 });
+    await idle(); await wait(300);
+    assert.equal(await undoN(), u0 + 1, 'all fields together are one step for undo');
+    const saved = await saveAs('formular-felder.pdf');
+    assert.deepEqual(await fieldsOf(saved), ['CheckBox:Newsletter', 'RadioGroup:Verpflegung', 'Signature:Unterschrift', 'TextField:Bemerkungen', 'TextField:Name', 'TextField:Ort, Datum', 'TextField:Telefon', 'TextField:Vorname']);
+    const chk = await PDFDocument.load(saved);
+    assert.deepEqual(chk.getForm().getRadioGroup('Verpflegung').getOptions(), ['Fleisch', 'Vegetarisch']);
+    assert.ok(chk.getForm().getTextField('Bemerkungen').isMultiline());
+    // The fields can be filled in (PDF.js shows them as input fields).
+    await rendered(); await wait(400);
+    assert.ok(await page.$$eval('.annotationLayer input, .annotationLayer textarea', (e) => e.length) >= 6, 'input fields on the page');
+    await shot('felder-angelegt');
+
+    // 3. Detect again: only the deselected field is new, nothing is created twice. Cancel with Esc.
+    await detect();
+    await page.waitForSelector('.fd-box');
+    b = await boxes();
+    assert.deepEqual(b.map((x) => `${x.type}:${x.name}`), ['checkbox:Parkplatz'], `second run: ${JSON.stringify(b)}`);
+    const u1 = await undoN();
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => !document.querySelector('.fd-box') && !document.querySelector('#detectbar'));
+    assert.equal(await undoN(), u1, 'cancel changes nothing');
+
+    // 4. Undo takes back all fields in one step.
+    await run('undo'); await wait(600);
+    assert.deepEqual(await fieldsOf(Buffer.from(await page.evaluate(() => Array.from(window.__app.doc.bytes)))), ['TextField:Vorname']);
+    await page.evaluate(() => window.__app.tools.closeGroup());
+    await closeAll();
+
+    // 5. Scanned form (image): lines and boxes come from the image, the names from the recognized text.
+    await openFile(file('formular-leer.pdf'));
+    const jpg = await page.evaluate(async () => { const { canvas } = await window.__app.viewer.renderToCanvas(0, 200, { noAnnots: true }); const x = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', 0.9)); return Array.from(new Uint8Array(await x.arrayBuffer())); });
+    fs.writeFileSync(file('formular-scan.jpg'), Uint8Array.from(jpg));
+    await closeAll();
+    await setDialogs({ open: [file('formular-scan.jpg')] });
+    await page.evaluate(() => window.__app.tools.createFromFile());
+    await page.waitForFunction(() => window.__app.doc?.name === 'formular-scan.pdf');
+    await page.evaluate(() => window.__app.doc.scanCheck); await idle(); await wait(300); await rendered();
+    await group('form'); await wait(200);
+    await detect();
+    await page.waitForSelector('.fd-box');
+    b = await boxes();
+    const got = b.map((x) => `${x.type}:${x.name}`);
+    const ocrWords = await page.evaluate(async () => (await window.__app.doc.pageText(0)).items.map((x) => x.str).filter((x) => x.trim()).join(' / '));
+    got.push(`(recognized text: ${ocrWords})`);
+    for (const want of ['text:Name', 'text:Vorname', 'checkbox:Newsletter', 'checkbox:Parkplatz', 'multiline:Bemerkungen', 'signature:Unterschrift']) assert.ok(got.includes(want), `scan, "${want}" recognized: ${got.join(' | ')}`);
+    assert.ok(b.length <= 10, `scan: no flood of wrong fields: ${got.join(' | ')}`);
+    await shot('felder-scan');
+    await page.click('#detectbar [data-act=apply]');
+    await page.waitForFunction(() => !document.querySelector('.fd-box') && !document.querySelector('#detectbar'), null, { timeout: 30000 });
+    await idle(); await wait(300);
+    const scanFields = await fieldsOf(Buffer.from(await page.evaluate(() => Array.from(window.__app.doc.bytes))));
+    assert.ok(scanFields.includes('TextField:Name') && scanFields.includes('CheckBox:Newsletter') && scanFields.includes('Signature:Unterschrift'), `scan, created: ${scanFields.join(' | ')}`);
+    await page.evaluate(() => window.__app.tools.closeGroup());
+    await closeAll();
+  });
+  step('Tables in export: Word, Excel and PowerPoint with real tables, also from a scan', async () => {
+    // Fictional report: table with lines and merged cells, table without lines, text before and after.
+    const d = await PDFDocument.create(); const f = await d.embedFont(StandardFonts.Helvetica); const fb = await d.embedFont(StandardFonts.HelveticaBold);
+    const p = d.addPage([595, 842]); const black = rgb(0, 0, 0);
+    const line = (x0, y0, x1, y1) => p.drawLine({ start: { x: x0, y: y0 }, end: { x: x1, y: y1 }, thickness: 0.9, color: black });
+    const right = (t, x, y, font = f, size = 11) => p.drawText(t, { x: x - font.widthOfTextAtSize(t, size), y, size, font });
+    p.drawText('Auswertung nach Region', { x: 60, y: 760, size: 16, font: fb });
+    for (const y of [700, 676, 652, 628, 604]) line(y === 676 ? 200 : 60, y, 460, y);
+    line(60, 604, 60, 700); line(200, 604, 200, 700); line(460, 604, 460, 700); line(330, 604, 330, 676);
+    p.drawText('Region', { x: 68, y: 684, size: 11, font: fb }); p.drawText('Leistung', { x: 306, y: 684, size: 11, font: fb });
+    p.drawText('Menge', { x: 208, y: 660, size: 11, font: fb }); p.drawText('Betrag', { x: 338, y: 660, size: 11, font: fb });
+    p.drawText('Nord', { x: 68, y: 636, size: 11, font: f }); right('12', 322, 636); right("1'250.00", 452, 636);
+    p.drawText('Süd', { x: 68, y: 612, size: 11, font: f }); right('34', 322, 612); right('320.00', 452, 612);
+    const rows = [['Artikel', 'Datum', 'Preis'], ['Schraube M8', '12.11.2026', '4.50'], ['Dübel', '03.12.2026', '12.00'], ['Winkel verzinkt', '15.01.2027', '128.75'], ['Total', '', '145.25']];
+    rows.forEach((r, k) => { const ft = k === 0 || k === 4 ? fb : f; p.drawText(r[0], { x: 60, y: 540 - k * 17, size: 11, font: ft }); if (r[1]) p.drawText(r[1], { x: 230, y: 540 - k * 17, size: 11, font: ft }); right(r[2], 460, 540 - k * 17, ft); });
+    p.drawText('Dieser Satz steht unter den Tabellen und läuft über die ganze Breite der Seite hinweg.', { x: 60, y: 430, size: 11, font: f });
+    fs.writeFileSync(file('tabellen.pdf'), await d.save());
+    await openFile(file('tabellen.pdf'));
+    const ex = async (fmt, name = `tab.${fmt}`) => { await setDialogs({ save: file(name) }); await page.evaluate((x) => window.__app.tools.exportAs(x), fmt); await idle(); await wait(150); return fs.readFileSync(file(name)); };
+    const times = (t, s) => t.split(s).length - 1;
+
+    // Word: two real tables, merged cells, numbers right-aligned, text outside stays a paragraph.
+    const xml = await (await JSZip.loadAsync(await ex('docx'))).file('word/document.xml').async('string');
+    assert.equal(times(xml, '<w:tbl>'), 2, 'two tables in Word');
+    assert.ok(/<w:gridSpan w:val="2"\/>/.test(xml), 'horizontally merged cell ("Leistung")');
+    assert.ok(/<w:vMerge w:val="restart"\/>/.test(xml) && /<w:vMerge w:val="continue"\/>/.test(xml), 'vertically merged cell ("Region")');
+    const cellOf = (text) => { const k = xml.indexOf(`>${text}<`); assert.ok(k > 0, `"${text}" is in the document`); return xml.slice(xml.lastIndexOf('<w:tc>', k), k); };
+    assert.ok(/<w:jc w:val="right"\/>/.test(cellOf('1&apos;250.00')) || /<w:jc w:val="right"\/>/.test(cellOf("1'250.00")), 'amount right-aligned');
+    assert.ok(/<w:jc w:val="right"\/>/.test(cellOf('128.75')), 'price right-aligned (table without lines)');
+    assert.ok(!/<w:jc w:val="right"\/>/.test(cellOf('Nord')), 'text left-aligned');
+    assert.ok(/<w:jc w:val="center"\/>/.test(cellOf('Leistung')), 'header across two columns centered');
+    for (const t of ['Auswertung nach Region', 'Schraube M8', 'Winkel verzinkt', 'Dieser Satz steht unter den Tabellen']) assert.equal(times(xml, t), 1, `"${t}" is in the document exactly once`);
+    const firstTbl = xml.indexOf('<w:tbl>'); const lastTblEnd = xml.lastIndexOf('</w:tbl>');
+    assert.ok(xml.indexOf('Auswertung nach Region') < firstTbl && xml.indexOf('Dieser Satz steht') > lastTblEnd, 'text outside the tables stays in place');
+    assert.ok(xml.indexOf('15.01.2027') > firstTbl && xml.indexOf('15.01.2027') < lastTblEnd);
+
+    // Excel: each cell on its own, numbers and dates are real values, merged cells, text outside stays.
+    const ExcelJS = require('exceljs');
+    const readSheet = async (bytes) => {
+      const wb = new ExcelJS.Workbook(); await wb.xlsx.load(bytes);
+      const ws = wb.worksheets[0]; const cells = [];
+      ws.eachRow((row, r) => row.eachCell((c, k) => cells.push({ r, c: k, v: c.value, fmt: c.numFmt, merged: c.isMerged, master: c.master.address, addr: c.address, align: c.alignment?.horizontal })));
+      return { ws, cells, find: (v) => cells.find((x) => (x.v instanceof Date && v instanceof Date ? x.v.getTime() === v.getTime() : x.v === v) && x.addr === x.master) };
+    };
+    let sh = await readSheet(await ex('xlsx'));
+    const nord = sh.find('Nord'); assert.ok(nord, `"Nord" in its own cell: ${JSON.stringify(sh.cells.map((x) => x.v))}`);
+    const amount = sh.find(1250); assert.ok(amount && amount.r === nord.r && amount.c === nord.c + 2, `1'250.00 is the number 1250 in the same row, two columns further: ${JSON.stringify(amount)}`);
+    assert.equal(amount.fmt, '#,##0.00'); assert.equal(amount.align, 'right');
+    assert.equal(sh.ws.getCell(nord.r, nord.c + 1).value, 12); assert.equal(sh.ws.getCell(nord.r + 1, nord.c + 2).value, 320);
+    const region = sh.find('Region'); const leistung = sh.find('Leistung');
+    assert.ok(region.merged && sh.ws.getCell(region.r + 1, region.c).master.address === region.addr, '"Region" merged across two rows');
+    assert.ok(leistung.merged && sh.ws.getCell(leistung.r, leistung.c + 1).master.address === leistung.addr, '"Leistung" merged across two columns');
+    const date = sh.find(new Date(Date.UTC(2026, 10, 12)));
+    assert.ok(date && date.fmt === 'dd.mm.yyyy', `date is a real date: ${JSON.stringify(sh.cells.filter((x) => x.v instanceof Date))}`);
+    const screw = sh.find('Schraube M8'); assert.ok(screw && date.r === screw.r && date.c === screw.c + 1);
+    assert.equal(sh.ws.getCell(screw.r, screw.c + 2).value, 4.5); assert.equal(sh.ws.getCell(screw.r + 2, screw.c + 2).value, 128.75);
+    const total = sh.find('Total'); assert.ok(total && sh.ws.getCell(total.r, total.c + 2).value === 145.25 && !sh.ws.getCell(total.r, total.c + 1).value, 'Total is below "Preis", the cell in between is empty');
+    assert.ok(sh.find('Auswertung nach Region') && sh.cells.some((x) => typeof x.v === 'string' && x.v.startsWith('Dieser Satz steht unter den Tabellen')), 'text outside the tables is kept');
+    assert.ok(sh.find('Auswertung nach Region').r < region.r && region.r < screw.r, 'order as on the page');
+
+    // PowerPoint (editable): real tables with merged cells.
+    await setDialogs({ save: file('tab.pptx') });
+    await page.evaluate(() => { window.__app.tools.exportAs('pptx'); });
+    await dialog({ mode: 'edit' }); await idle(); await wait(200);
+    const slide = await (await JSZip.loadAsync(fs.readFileSync(file('tab.pptx')))).file('ppt/slides/slide1.xml').async('string');
+    assert.equal(times(slide, '<a:tbl>'), 2, 'two tables on the slide');
+    assert.ok(/gridSpan="2"/.test(slide) && /rowSpan="2"/.test(slide), 'merged cells in PowerPoint');
+    assert.ok(slide.includes('Schraube M8') && slide.includes('Auswertung nach Region'));
+
+    // Cross-check with installed Office (if available): Word, Excel and PowerPoint open the files and
+    // convert them back to a PDF. A damaged file would fail here.
+    const office = await page.evaluate(() => window.dp.officeAvailable());
+    for (const [prog, name] of [['Word.Application', 'tab.docx'], ['Excel.Application', 'tab.xlsx'], ['PowerPoint.Application', 'tab.pptx']]) {
+      if (!office.includes(prog)) { console.log(`         Note: ${prog} not installed, ${name} not checked with Office`); continue; }
+      // PowerPoint runs only once per user: if it is already open, the conversion would share this window
+      // and close it at the end. Then better not check.
+      if (prog.startsWith('PowerPoint') && /POWERPNT\.EXE/i.test(require('child_process').execSync('tasklist /FI "IMAGENAME eq POWERPNT.EXE" /NH').toString())) { console.log('         Note: PowerPoint is open, tab.pptx not checked with PowerPoint'); continue; }
+      const back = await page.evaluate(async (x) => Array.from(await window.dp.officeToPdf(x)), file(name));
+      const txt = (await allText(await open(back))).replace(/\s+/g, ' ');
+      assert.ok(/Schraube M8/.test(txt) && /Nord/.test(txt) && /128[.,]75/.test(txt), `${prog} opens ${name}: ${txt.slice(0, 300)}`);
+      console.log(`         ${prog.split('.')[0]} opens ${name} and shows the tables`);
+    }
+
+    // Other formats stay as before: the text of the tables is in the text export.
+    assert.match((await ex('txt')).toString(), /Schraube M8/);
+    await shot('tabellen-export');
+    await closeAll();
+
+    // Scanned table: lines from the image, text from text recognition.
+    await openFile(file('tabellen.pdf'));
+    const jpg = await page.evaluate(async () => { const { canvas } = await window.__app.viewer.renderToCanvas(0, 200, { noAnnots: true }); const x = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', 0.9)); return Array.from(new Uint8Array(await x.arrayBuffer())); });
+    fs.writeFileSync(file('tabellen-scan.jpg'), Uint8Array.from(jpg));
+    await closeAll();
+    await setDialogs({ open: [file('tabellen-scan.jpg')] });
+    await page.evaluate(() => window.__app.tools.createFromFile());
+    await page.waitForFunction(() => window.__app.doc?.name === 'tabellen-scan.pdf');
+    await page.evaluate(() => window.__app.doc.scanCheck); await idle(); await wait(300); await rendered();
+    sh = await readSheet(await ex('xlsx', 'tab-scan.xlsx'));
+    const dump = JSON.stringify(sh.cells.map((x) => [x.addr, x.v]));
+    const sNord = sh.find('Nord'); assert.ok(sNord, `scan: "Nord" in its own cell: ${dump}`);
+    assert.equal(sh.ws.getCell(sNord.r, sNord.c + 2).value, 1250, `scan: amount as a number in the third column: ${dump}`);
+    assert.equal(sh.ws.getCell(sNord.r + 1, sNord.c + 2).value, 320, `scan: second row: ${dump}`);
+    const sScrew = sh.cells.find((x) => typeof x.v === 'string' && /^Schraube/.test(x.v));
+    assert.ok(sScrew && sh.ws.getCell(sScrew.r, sScrew.c + 1).value instanceof Date && sh.ws.getCell(sScrew.r, sScrew.c + 2).value === 4.5, `scan: table without lines with date and number: ${dump}`);
+    const sx = await (await JSZip.loadAsync(await ex('docx', 'tab-scan.docx'))).file('word/document.xml').async('string');
+    assert.ok(times(sx, '<w:tbl>') >= 2, 'scan: tables in Word');
+    await closeAll();
+  });
+  step('Skewed scan: read straightened, text lies over the image, straighten page with preview, preference', async () => {
+    // Fictional letter, "scanned" as an image rotated 2.5 degrees clockwise.
+    const ANGLE = 2.5;
+    const d = await PDFDocument.create(); const f = await d.embedFont(StandardFonts.Helvetica); const fb = await d.embedFont(StandardFonts.HelveticaBold);
+    const p = d.addPage([595, 842]);
+    p.drawText('Lieferbedingungen der Werkstatt Sonnenhof', { x: 70, y: 740, size: 16, font: fb });
+    const lines = [
+      'Die Lieferung erfolgt innerhalb von zehn Arbeitstagen nach Eingang der Bestellung.',
+      'Sendungen innerhalb der Stadt werden mit dem eigenen Lastenrad kostenlos gebracht.',
+      'Bei Lieferungen ins Ausland berechnen wir die Kosten nach Gewicht und Zielgebiet.',
+      'Beanstandungen melden Sie bitte schriftlich innert vierzehn Tagen nach Erhalt.',
+      'Gutscheine sind drei Jahre ab dem Ausstellungsdatum in der Werkstatt einlösbar.',
+      'Reparaturen erledigen wir nach Voranmeldung jeweils am Dienstag und Donnerstag.',
+    ];
+    lines.forEach((t, k) => p.drawText(t, { x: 70, y: 690 - k * 26, size: 12, font: f }));
+    fs.writeFileSync(file('brief.pdf'), await d.save());
+    await openFile(file('brief.pdf'));
+    const tiltJpg = async (deg, name) => {
+      const arr = await page.evaluate(async (a) => {
+        const { canvas } = await window.__app.viewer.renderToCanvas(0, 200, { noAnnots: true });
+        const out = document.createElement('canvas'); out.width = canvas.width; out.height = canvas.height;
+        const c = out.getContext('2d'); c.fillStyle = '#fff'; c.fillRect(0, 0, out.width, out.height);
+        c.translate(out.width / 2, out.height / 2); c.rotate((a * Math.PI) / 180); c.drawImage(canvas, -out.width / 2, -out.height / 2);
+        const x = await new Promise((r) => out.toBlob(r, 'image/jpeg', 0.9)); return Array.from(new Uint8Array(await x.arrayBuffer()));
+      }, deg);
+      fs.writeFileSync(file(name), Uint8Array.from(arr));
+    };
+    await tiltJpg(ANGLE, 'brief-schief.jpg'); await tiltJpg(0, 'brief-gerade.jpg');
+    await closeAll();
+    const importJpg = async (name) => {
+      await setDialogs({ open: [file(name)] });
+      await page.evaluate(() => window.__app.tools.createFromFile());
+      await page.waitForFunction((n) => window.__app.doc?.name === n, name.replace('.jpg', '.pdf'));
+      await page.evaluate(() => window.__app.doc.scanCheck); await idle(); await wait(300); await rendered(); await fitPage();
+    };
+    const docText = () => page.evaluate(async () => (await window.__app.doc.pageText(0)).items.map((x) => x.str + (x.hasEOL ? ' ' : '')).join('').replace(/\s+/g, ' '));
+    const undoN = () => page.evaluate(() => window.__app.doc.undoStack.length);
+    // Position of a word in the original (center, slightly above the baseline) and the same position in the rotated image.
+    const wordAt = (k, word) => { const t = lines[k]; const i = t.indexOf(word); const x = 70 + f.widthOfTextAtSize(t.slice(0, i), 12) + f.widthOfTextAtSize(word, 12) / 2; return [x, 690 - k * 26 + 4]; };
+    const turned = ([x, y], deg) => { const a = (deg * Math.PI) / 180; const dx = x - 297.5; const dy = y - 421; return [297.5 + dx * Math.cos(a) + dy * Math.sin(a), 421 - dx * Math.sin(a) + dy * Math.cos(a)]; };
+    // Searches for a word and returns where the highlight lies and how much text (dark pixels) is below it.
+    const hit = async (word) => {
+      await run('find'); await page.fill('#findbar .row:not(.rep) input[type=text]', word);
+      await page.waitForFunction(() => /^1 of 1$/.test(document.querySelector('#findbar .cnt').textContent), null, { timeout: 15000 });
+      await wait(400);
+      const r = await page.evaluate(() => {
+        const els = [...document.querySelectorAll('.pv-page .hl i.cur')]; if (!els.length) return null;
+        const b = els.map((e) => e.getBoundingClientRect()); const l = Math.min(...b.map((x) => x.left)); const t = Math.min(...b.map((x) => x.top)); const rr = Math.max(...b.map((x) => x.right)); const bt = Math.max(...b.map((x) => x.bottom));
+        const n = window.__app.viewer.node(0); const k = n.canvas.width / n.el.clientWidth; const o = n.el.getBoundingClientRect();
+        const data = n.canvas.getContext('2d').getImageData(Math.round((l - o.left) * k), Math.round((t - o.top) * k), Math.max(1, Math.round((rr - l) * k)), Math.max(1, Math.round((bt - t) * k))).data;
+        let dark = 0; for (let q = 0; q < data.length; q += 4) if (data[q] < 120) dark++;
+        return { x: (l + rr) / 2, y: (t + bt) / 2, dark: dark / (data.length / 4) };
+      });
+      await page.evaluate(() => window.__app.find.close());
+      return r;
+    };
+    const near = async (word, k, deg, what) => {
+      const h = await hit(word); assert.ok(h, `${what}: "${word}" found and highlighted`);
+      const [ex, ey] = await pagePt(0, ...turned(wordAt(k, word), deg));
+      assert.ok(Math.abs(h.y - ey) <= 5 && Math.abs(h.x - ex) <= 12, `${what}: highlight of "${word}" lies on the word in the image (expected ${Math.round(ex)}/${Math.round(ey)}, is ${Math.round(h.x)}/${Math.round(h.y)})`);
+      assert.ok(h.dark > 0.05, `${what}: below the highlight of "${word}" there is text (${h.dark.toFixed(3)})`);
+    };
+    const tilts = () => page.evaluate(async () => (await window.__app.doc.pageText(0)).items.filter((x) => x.str.trim().length > 3).map((x) => Math.atan2(x.transform[1], x.transform[0]) * 180 / Math.PI));
+
+    // 1. Preference off (default): the skewed page is read straightened, the image stays as it is.
+    assert.equal(await page.evaluate(() => window.__app.settings.ocrDeskew), false, 'default: do not straighten the image automatically');
+    await page.evaluate(() => { const t = window.__app.tools; window.__straightened = 0; const o = t.straighten; t.straighten = async function (...a) { window.__straightened++; return o.apply(this, a); }; });
+    await importJpg('brief-schief.jpg');
+    let t = await docText();
+    for (const w of ['Lieferbedingungen', 'Arbeitstagen', 'Bestellung', 'Lastenrad', 'kostenlos', 'Zielgebiet', 'Beanstandungen', 'vierzehn', 'Gutscheine', 'einlösbar', 'Reparaturen', 'Donnerstag']) assert.ok(t.includes(w), `read skewed, "${w}" recognized: ${t}`);
+    assert.equal(await page.evaluate(() => window.__straightened), 0, 'the image was not changed');
+    const L1 = await undoN();
+    // The recognized text follows the skew (negative counterclockwise in the PDF) ...
+    const tl = await tilts();
+    assert.ok(tl.length >= 20 && tl.every((a) => Math.abs(a + ANGLE) < 0.5), `text is rotated with the line: ${tl.slice(0, 8).map((a) => a.toFixed(2))}`);
+    // ... and lies exactly over the word in the image at the start and at the end of the line (at the line end it would otherwise be 20 points off).
+    await near('erfolgt', 0, ANGLE, 'schief'); await near('Bestellung', 0, ANGLE, 'schief'); await near('Donnerstag', 5, ANGLE, 'schief'); await near('Reparaturen', 5, ANGLE, 'schief');
+    await shot('schief-gelesen');
+    // Editing in the image: the line is one block with its whole text, and when deleted its letters disappear from the image.
+    await group('edit'); await page.waitForSelector('.eb'); await wait(300);
+    const blk = await page.evaluate(async () => { const o = (await window.__app.editor.objects(0)).find((x) => x.kind === 'text' && /Gutscheine/.test(x.text)); return o ? { text: o.text, ocr: !!o.ocr, words: o.words.length } : null; });
+    assert.ok(blk && blk.ocr && /Gutscheine sind drei Jahre/.test(blk.text) && /einlösbar/.test(blk.text), `skewed line as one block: ${JSON.stringify(blk)}`);
+    const inkOnLine = (k) => page.evaluate(([pts]) => { const v = window.__app.viewer; const n = v.node(0); const s = n.canvas.width / n.el.clientWidth; const c = n.canvas.getContext('2d'); let dark = 0; for (const [x, y] of pts) { const q = v.viewport(0).convertToViewportPoint(x, y); const dd = c.getImageData(Math.round(q[0] * s) - 2, Math.round(q[1] * s) - 2, 5, 5).data; for (let i = 0; i < dd.length; i += 4) if (dd[i] < 120) dark++; } return dark; },
+      [Array.from({ length: 90 }, (_, j) => turned([72 + j * 5, 690 - k * 26 + 4], ANGLE))]);
+    const before = await inkOnLine(4); const other = await inkOnLine(3);
+    assert.ok(before > 150, `text on the line before deleting: ${before}`);
+    const u = await undoN();
+    await page.evaluate(async () => { const e = window.__app.editor; const o = (await e.objects(0)).find((x) => x.kind === 'text' && /Gutscheine/.test(x.text)); await e.replaceText(o, 0, '', null, {}); });
+    await page.waitForFunction((n) => window.__app.doc.undoStack.length > n, u, { timeout: 30000 }); await rendered(); await wait(500);
+    const after = await inkOnLine(4);
+    assert.ok(after <= before * 0.08, `the text of the skewed line is removed from the image: ${before} -> ${after}`);
+    assert.ok(await inkOnLine(3) >= other * 0.9, 'the line above is untouched');
+    t = await docText(); assert.ok(!t.includes('Gutscheine') && t.includes('Beanstandungen'));
+    await run('undo'); await wait(500);
+    await page.evaluate(() => window.__app.tools.closeGroup()); await rendered(); await fitPage();
+
+    // 2. "Straighten page": detected angle, preview, angle by hand; afterwards the image is straight.
+    await group('ocr'); await wait(200);
+    const u2 = await undoN();
+    await page.click('#left-panel >> text=Straighten page');
+    await page.waitForSelector('.scrim [data-field="angle"]', { timeout: 30000 });
+    const auto = Number(await page.inputValue('.scrim [data-field="angle"]'));
+    assert.ok(Math.abs(auto - ANGLE) <= 0.3, `detected angle: ${auto}`);
+    assert.ok(await page.$eval('.scrim canvas.deskew-view', (c) => c.width > 100 && c.height > 100), 'preview present');
+    assert.equal(await page.inputValue('.scrim [data-field="range"]'), '1');
+    // By hand: the value can be changed, the preview redraws, "Automatic" restores the detected angle.
+    const pix = () => page.$eval('.scrim canvas.deskew-view', (c) => { const dd = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let s = 0; for (let i = 0; i < dd.length; i += 97) s = (s * 31 + dd[i]) % 1000003; return s; });
+    const shown = await pix();
+    await page.fill('.scrim [data-field="angle"]', '-6'); await wait(100);
+    assert.notEqual(await pix(), shown, 'preview follows the angle');
+    await shot('begradigen-dialog');
+    await page.click('.scrim [data-act=auto]'); await wait(100);
+    assert.equal(Number(await page.inputValue('.scrim [data-field="angle"]')), auto);
+    assert.equal(await pix(), shown);
+    await page.fill('.scrim [data-field="angle"]', String(ANGLE));
+    await ok();
+    // Straightening and reading again run one after the other, each with its own progress indicator: wait until the text is back.
+    for (let k = 0; k < 120; k++) { await idle(); await wait(500); if (!(await page.$('.prog')) && (await tilts()).length >= 6 && (await undoN()) === u2 + 1) break; }
+    await rendered(); await fitPage();
+    assert.equal(await undoN(), u2 + 1, 'straightening including reading again is one step');
+    const flat = await tilts();
+    assert.ok(flat.length >= 6 && flat.every((a) => Math.abs(a) < 0.25), `after straightening the text is horizontal: ${flat.slice(0, 8).map((a) => a.toFixed(2))}`);
+    await near('erfolgt', 0, 0, 'begradigt'); await near('Bestellung', 0, 0, 'begradigt'); await near('Donnerstag', 5, 0, 'begradigt');
+    t = await docText(); for (const w of ['Lieferbedingungen', 'Lastenrad', 'Zielgebiet', 'Gutscheine', 'Donnerstag']) assert.ok(t.includes(w), `straightened, "${w}" recognized: ${t}`);
+    await shot('begradigt');
+    // Undo: image and text are skewed again.
+    await run('undo'); await wait(600); await rendered(); await fitPage();
+    await near('Bestellung', 0, ANGLE, 'after undo');
+    await page.evaluate(() => window.__app.tools.closeGroup());
+    await closeAll();
+
+    // 3. Normal PDF without a scan: stays unchanged, with a notice.
+    await openFile(file('brief.pdf'));
+    const len0 = await page.evaluate(() => window.__app.doc.bytes.length);
+    await page.evaluate(() => { window.__app.tools.deskew(); });
+    await page.waitForFunction(() => /not a scan/.test(document.querySelector('.scrim .dlg')?.textContent || ''));
+    await page.click('.scrim .btn.primary'); await wait(150);
+    assert.equal(await page.evaluate(() => window.__app.doc.bytes.length), len0); assert.equal(await undoN(), 0);
+    await closeAll();
+
+    // 4. Preference on: when recognizing, the image itself is rotated straight, all in one step.
+    await page.evaluate(() => { window.__app.settings.ocrDeskew = true; window.__straightened = 0; });
+    await importJpg('brief-schief.jpg');
+    assert.equal(await page.evaluate(() => window.__straightened), 1, 'the skewed image was straightened');
+    assert.equal(await undoN(), L1, 'straightening and recognizing are one step together');
+    const flat2 = await tilts();
+    assert.ok(flat2.length >= 6 && flat2.every((a) => Math.abs(a) < 0.25), `preference: text horizontal: ${flat2.slice(0, 8).map((a) => a.toFixed(2))}`);
+    await near('Bestellung', 0, 0, 'preference'); await near('Reparaturen', 5, 0, 'preference');
+    await closeAll();
+    // A page that is already straight stays unchanged.
+    await page.evaluate(() => { window.__straightened = 0; });
+    await importJpg('brief-gerade.jpg');
+    assert.equal(await page.evaluate(() => window.__straightened), 0, 'a straight page is not touched');
+    await near('Bestellung', 0, 0, 'straight page');
+    await page.evaluate(() => { window.__app.settings.ocrDeskew = false; });
     await closeAll();
   });
   step('Multiple tabs and protection against data loss', async () => {

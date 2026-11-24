@@ -2,7 +2,7 @@
 import { h } from './util.js';
 
 export const DEFAULTS = {
-  restoreDocs: false, recentCount: 10,
+  appearance: 'light', restoreDocs: false, recentCount: 10,
   warnSigned: true,
   formHighlight: false,
   userName: '', org: '', email: '',
@@ -14,7 +14,7 @@ export const DEFAULTS = {
   units: 'mm', gridSize: 10,
   speechRate: 1, speechVoice: '',
   searchCase: false, searchWhole: false,
-  ocrOnOpen: 'ask', ocrOnCreate: true, ocrLang: 'deu+eng',
+  ocrOnOpen: 'ask', ocrOnCreate: true, ocrLang: 'deu+eng', ocrDeskew: false,
 };
 export const withDefaults = (s) => ({ ...DEFAULTS, ...(s || {}) });
 
@@ -26,6 +26,7 @@ const voices = () => {
 /** Categories in alphabetical order. */
 const CATEGORIES = () => [
   { id: 'general', label: 'General', fields: [
+    { k: 'appearance', type: 'select', label: 'Appearance', options: [['light', 'Light'], ['dark', 'Dark'], ['system', 'Same as Windows']], help: 'Default: Light. In the dark appearance, the menu bar, tabs, tools pane, sidebars, dialogs and the home page are dark. The PDF pages stay white like paper; only the background around the pages becomes dark. "Same as Windows" follows the Windows setting (Colors > Mode). The change takes effect immediately.' },
     { k: 'restoreDocs', type: 'checkbox', label: 'Reopen the last open documents at startup' },
     { k: 'recentCount', type: 'select', label: 'Number of recent files', options: [[5, '5'], [10, '10'], [20, '20'], [30, '30']] },
   ] },
@@ -58,6 +59,7 @@ const CATEGORIES = () => [
   { id: 'ocr', label: 'Scan & OCR', fields: [
     { k: 'ocrOnOpen', type: 'select', label: 'Scanned documents when opening', options: [['ask', 'Offer to recognize text'], ['auto', 'Recognize text automatically'], ['never', 'Do nothing']] },
     { k: 'ocrOnCreate', type: 'checkbox', label: 'Recognize text when a PDF is created from an image, the scanner or the clipboard, or when an image is pasted with Ctrl+V' },
+    { k: 'ocrDeskew', type: 'checkbox', label: 'Straighten skewed scans automatically when recognizing text', help: 'Default: off. A skewed page is always straightened for reading; the recognized text still lies over the skewed image afterwards. When turned on, the image of the page itself is also rotated straight (as with "Straighten page" under "Scan & OCR"). Pages that are already straight and pages with normal text stay unchanged.' },
     { k: 'ocrLang', type: 'select', label: 'Text recognition language', options: [['deu+eng', 'German + English'], ['deu', 'German'], ['fra', 'French'], ['ita', 'Italian'], ['eng', 'English'], ['deu+fra+ita+eng', 'All four languages (slower)']], help: 'Text recognition runs entirely on this PC, without the internet. Recognized text can be searched, copied and changed under "Edit PDF".' },
   ] },
   { id: 'page', label: 'Page Display', fields: [

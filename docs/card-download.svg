@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="192" height="192" viewBox="0 0 192 192">
+  <defs>
+    <linearGradient id="dp-card" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#17a5aa"/>
+      <stop offset="1" stop-color="#0a5d66"/>
+    </linearGradient>
+  </defs>
+  <rect x="6" y="6" width="180" height="180" rx="42" fill="url(#dp-card)"/>
+  <path d="M96 48v62M68 86l28 28 28-28" fill="none" stroke="#fff" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M56 140h80" fill="none" stroke="#b9e3e6" stroke-width="14" stroke-linecap="round"/>
+</svg>

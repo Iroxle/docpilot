@@ -1,8 +1,16 @@
-:root{
+/* Interface colors. The PDF page (.pv-page) sets the same light values again for itself: everything that lies on
+   the page (form fields, frames, previews) stays light like paper, also in the dark appearance. */
+:root,.pv-page{
   --accent:#0e7c86; --accent-d:#0a656e; --accent-dd:#074d55; --accent-l:#dcf0f1; --accent-ll:#eef8f8;
   --ink:#181210; --ink2:#4a4647; --grey:#918f90; --line:#dcdde0; --line2:#ebecee;
   --bg:#f3f4f6; --panel:#fff; --canvas:#d9dbdf; --danger:#c62828; --ok:#2e7d32; --warn:#b26a00;
   --r:6px; --shadow:0 2px 10px rgb(24 18 16 / .16); --shadow2:0 10px 34px rgb(24 18 16 / .28);
+  /* More interface colors. The dark appearance only redefines these variables (see below). */
+  --accent:#0e7c86; --link:#0a656e; --field:#fff; --field-line:#b9babd; --head:#f4f5f7; --hover:#e8f4f5; --ph:#7a7778;
+  --toast:#181210; --banner:#fff6e0; --banner-line:#f0dca8; --info-line:#b6dfe2;
+  --ok-bg:#e4f3e5; --bad-bg:#fbe5e5; --warn-bg:#fff1d6; --mark:#ffe08a; --scrim:rgb(24 18 16 / .4);
+  /* Paper: pages, thumbnails and the signature pad stay white in every appearance. */
+  --paper:#fff; --paper-ink:#181210;
   font-family:"Segoe UI",system-ui,sans-serif; font-size:13px; color:var(--ink);
 }
 *{box-sizing:border-box}
@@ -15,7 +23,7 @@ button{cursor:pointer}
 
 #topbar{display:flex;align-items:stretch;height:40px;background:var(--panel);border-bottom:1px solid var(--line);flex:none}
 .brand{display:flex;align-items:center;gap:8px;padding:0 14px;font-weight:600;white-space:nowrap}
-.brand img{width:22px;height:22px;border-radius:3px}
+.brand img{width:22px;height:22px;border-radius:3px;background:var(--paper)}
 #tabs{display:flex;align-items:stretch;overflow:hidden;min-width:0}
 .tab{display:flex;align-items:center;gap:6px;padding:0 12px;max-width:220px;border:0;background:none;border-bottom:2px solid transparent;white-space:nowrap;color:var(--ink2)}
 .tab:hover{background:var(--accent-ll)}
@@ -38,7 +46,7 @@ button{cursor:pointer}
 .ib:disabled{opacity:.4;cursor:default;background:none}
 .sep{width:1px;height:20px;background:var(--line);margin:0 4px;flex:none}
 .btn{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 14px;border-radius:16px;border:1px solid var(--line);background:var(--panel);font-weight:600}
-.btn:hover{border-color:var(--accent);color:var(--accent-d)}
+.btn:hover{border-color:var(--accent);color:var(--link)}
 .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
 .btn.primary:hover{background:var(--accent-d);border-color:var(--accent-d);color:#fff}
 .btn.danger{color:var(--danger)}
@@ -76,17 +84,17 @@ h2.sec{font-size:15px;margin:0 0 10px}
 #view-doc{position:relative}
 #propbar{position:absolute;top:50px;left:50%;transform:translateX(-50%);z-index:32;display:flex;align-items:center;gap:8px;min-height:38px;max-width:62%;padding:4px 12px;background:var(--panel);border-radius:10px;box-shadow:var(--shadow);flex-wrap:wrap}
 #propbar label{display:flex;align-items:center;gap:4px;color:var(--ink2)}
-#propbar select,#propbar input[type=number]{height:26px;border:1px solid var(--line);border-radius:4px;background:#fff;padding:0 4px}
+#propbar select,#propbar input[type=number]{height:26px;border:1px solid var(--line);border-radius:4px;background:var(--field);padding:0 4px}
 #propbar .ocr-tag{font-size:11px;font-weight:600;color:var(--accent-dd);background:var(--accent-l);border-radius:10px;padding:3px 9px;white-space:nowrap}
 /* Font picker like in Word */
-.fontpick{position:relative;display:flex;align-items:center;height:26px;border:1px solid var(--line);border-radius:4px;background:#fff}
+.fontpick{position:relative;display:flex;align-items:center;height:26px;border:1px solid var(--line);border-radius:4px;background:var(--field)}
 .fontpick:focus-within{border-color:var(--accent)}
 .fp-input{width:150px;height:24px;border:0;outline:0;background:transparent;padding:0 6px;font:inherit;color:var(--ink)}
 .fp-arrow{display:flex;align-items:center;justify-content:center;width:22px;height:24px;border:0;border-left:1px solid var(--line);background:transparent;color:var(--ink2);cursor:pointer;padding:0}
-.fp-arrow:hover{background:var(--hover,#e8f4f5)}
+.fp-arrow:hover{background:var(--hover)}
 .fp-arrow svg{width:14px;height:14px}
-.fp-pop{position:absolute;top:calc(100% + 4px);left:-1px;z-index:60;width:290px;max-height:min(420px,60vh);overflow-y:auto;background:#fff;border:1px solid var(--line);border-radius:6px;box-shadow:var(--shadow);padding:4px 0}
-.fp-head{padding:6px 10px 4px;font-size:11px;font-weight:600;color:var(--ink2);background:#f4f5f7;border-top:1px solid var(--line)}
+.fp-pop{position:absolute;top:calc(100% + 4px);left:-1px;z-index:60;width:290px;max-height:min(420px,60vh);overflow-y:auto;background:var(--panel);border:1px solid var(--line);border-radius:6px;box-shadow:var(--shadow);padding:4px 0}
+.fp-head{padding:6px 10px 4px;font-size:11px;font-weight:600;color:var(--ink2);background:var(--head);border-top:1px solid var(--line)}
 .fp-head:first-child{border-top:0}
 .fp-item{padding:4px 12px;font-size:15px;line-height:22px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;color:var(--ink)}
 .fp-item.active{background:rgb(14 124 134 / .12)}
@@ -98,8 +106,8 @@ h2.sec{font-size:15px;margin:0 0 10px}
 .swatch{width:18px;height:18px;border-radius:50%;border:1px solid rgb(0 0 0 / .25);padding:0}
 .swatch.on{outline:2px solid var(--accent);outline-offset:1px}
 .swatch.none{background:linear-gradient(135deg,#fff 45%,#d33 46%,#d33 54%,#fff 55%)}
-#doc-banner{display:flex;align-items:center;gap:10px;padding:6px 14px;background:#fff6e0;border-bottom:1px solid #f0dca8;flex:none}
-#doc-banner.info{background:var(--accent-l);border-color:#b6dfe2}
+#doc-banner{display:flex;align-items:center;gap:10px;padding:6px 14px;background:var(--banner);border-bottom:1px solid var(--banner-line);flex:none}
+#doc-banner.info{background:var(--accent-l);border-color:var(--info-line)}
 #doc-banner .spacer{flex:1}
 
 #doc-body{flex:1;min-height:0;display:flex;position:relative}
@@ -122,11 +130,11 @@ h2.sec{font-size:15px;margin:0 0 10px}
 #viewer-wrap{flex:1;min-width:0;position:relative;background:var(--canvas);display:flex}
 #viewer{position:absolute;inset:0;overflow:auto;outline:0;padding:58px 58px 60px}
 #viewer.rulers{left:22px;top:22px}
-#ruler-h{position:absolute;left:22px;right:0;top:0;height:22px;background:#fff;border-bottom:1px solid var(--line);z-index:5;overflow:hidden}
-#ruler-v{position:absolute;left:0;top:22px;bottom:0;width:22px;background:#fff;border-right:1px solid var(--line);z-index:5;overflow:hidden}
+#ruler-h{position:absolute;left:22px;right:0;top:0;height:22px;background:var(--panel);border-bottom:1px solid var(--line);z-index:5;overflow:hidden}
+#ruler-v{position:absolute;left:0;top:22px;bottom:0;width:22px;background:var(--panel);border-right:1px solid var(--line);z-index:5;overflow:hidden}
 .pv-pages{display:flex;flex-direction:column;align-items:center;gap:12px;width:max-content;min-width:100%;margin:0 auto}
 .pv-pages.double{display:grid;grid-template-columns:auto auto;justify-content:center;gap:12px}
-.pv-page{position:relative;background:#fff;box-shadow:0 1px 6px rgb(0 0 0 / .3);flex:none;overflow:hidden}
+.pv-page{position:relative;background:var(--paper);box-shadow:0 1px 6px rgb(0 0 0 / .3);flex:none;overflow:hidden}
 .pv-page.gone{display:none}
 .pv-page canvas.main{position:absolute;inset:0;width:100%;height:100%;display:block}
 .pv-page .ph{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--grey);font-size:18px}
@@ -151,10 +159,10 @@ body.form-hl .annotationLayer .textWidgetAnnotation input,body.form-hl .annotati
 .ann-html textarea{position:absolute;inset:0;width:100%;height:100%;border:0;outline:0;resize:none;background:transparent;padding:3px;line-height:1.2;font:inherit;color:inherit}
 .sel-frame{position:absolute;border:1px dashed var(--accent);pointer-events:none;z-index:9}
 .handle{position:absolute;width:9px;height:9px;background:#fff;border:1.5px solid var(--accent);margin:-5px 0 0 -5px;pointer-events:auto;z-index:10;border-radius:2px}
-.note-pop{position:fixed;z-index:60;width:260px;background:#fff;border-radius:8px;box-shadow:var(--shadow2);padding:8px}
+.note-pop{position:fixed;z-index:60;width:260px;background:var(--panel);border-radius:8px;box-shadow:var(--shadow2);padding:8px}
 .note-pop header{display:flex;align-items:center;gap:6px;font-weight:600;margin-bottom:6px}
 .note-pop textarea{width:100%;height:90px;resize:vertical;border:1px solid var(--line);border-radius:4px;padding:5px}
-.mini{position:fixed;z-index:55;display:flex;gap:2px;background:#fff;border-radius:8px;box-shadow:var(--shadow2);padding:3px}
+.mini{position:fixed;z-index:55;display:flex;gap:2px;background:var(--panel);border-radius:8px;box-shadow:var(--shadow2);padding:3px}
 
 .eb{position:absolute;border:1px solid rgb(14 124 134 / .55);cursor:move;background:transparent}
 .eb:hover{background:rgb(14 124 134 / .08)}
@@ -169,9 +177,9 @@ body.pdf-editing .textLayer,body.pdf-editing .annotationLayer{pointer-events:non
 .edit{user-select:none}
 
 #page-controls{position:absolute;right:12px;bottom:12px;z-index:30;display:flex;align-items:center;gap:1px;background:var(--panel);padding:3px;border-radius:10px;box-shadow:var(--shadow)}
-#page-controls input{width:42px;height:26px;text-align:center;border:1px solid #b9babd;border-radius:4px;background:#fff;color:var(--ink);font-weight:600}
+#page-controls input{width:42px;height:26px;text-align:center;border:1px solid var(--field-line);border-radius:4px;background:var(--field);color:var(--ink);font-weight:600}
 #page-controls input:focus{outline:2px solid var(--accent);outline-offset:-1px;border-color:var(--accent)}
-#page-controls select{height:26px;border:1px solid #b9babd;border-radius:4px;background:#fff;color:var(--ink)}
+#page-controls select{height:26px;border:1px solid var(--field-line);border-radius:4px;background:var(--field);color:var(--ink)}
 #page-controls .of{padding:0 6px;color:var(--ink2);white-space:nowrap}
 
 #right-rail{width:44px;flex:none;background:var(--panel);border-left:1px solid var(--line);display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 0}
@@ -182,7 +190,7 @@ body.pdf-editing .textLayer,body.pdf-editing .annotationLayer{pointer-events:non
 .rp-body{flex:1;overflow:auto;padding:8px;min-height:0}
 .thumbs{display:flex;flex-direction:column;align-items:center;gap:8px}
 .thumb{position:relative;border:2px solid transparent;border-radius:4px;background:none;padding:2px;text-align:center}
-.thumb canvas{display:block;background:#fff;box-shadow:0 1px 4px rgb(0 0 0 / .3);max-width:100%}
+.thumb canvas{display:block;background:var(--paper);box-shadow:0 1px 4px rgb(0 0 0 / .3);max-width:100%}
 .thumb.on{border-color:var(--accent)}
 .thumb.sel{background:var(--accent-l)}
 .thumb .n{font-size:11px;color:var(--ink2);margin-top:2px}
@@ -195,30 +203,53 @@ body.pdf-editing .textLayer,body.pdf-editing .annotationLayer{pointer-events:non
 .tree-row.sel{background:var(--accent-l)}
 .tree-row .tw{width:18px;height:22px;border:0;background:none;padding:0;color:var(--ink2)}
 .tree-row .lb{flex:1;border:0;background:none;text-align:left;padding:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.cm{border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:8px;background:#fff}
+.cm{border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:8px;background:var(--panel)}
 .cm.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
 .cm header{display:flex;align-items:center;gap:6px}
 .cm .dot{width:10px;height:10px;border-radius:50%;flex:none;border:1px solid rgb(0 0 0 / .2)}
 .cm .au{font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cm time{color:var(--grey);font-size:11px}
 .cm .tx{width:100%;border:1px solid transparent;border-radius:4px;resize:none;padding:3px;margin-top:4px;background:transparent;min-height:26px}
-.cm .tx:hover,.cm .tx:focus{border-color:var(--line);background:#fff}
+.cm .tx:hover,.cm .tx:focus{border-color:var(--line);background:var(--field)}
 .cm .rep{margin:6px 0 0 14px;padding-left:8px;border-left:2px solid var(--line2)}
 .cm .rep b{font-size:12px}
 .cm .act{display:flex;align-items:center;gap:4px;margin-top:6px}
 .cm .act input{flex:1;min-width:0;height:26px;border:1px solid var(--line);border-radius:4px;padding:0 5px}
-.cm .act select{height:26px;border:1px solid var(--line);border-radius:4px;background:#fff;max-width:88px}
+.cm .act select{height:26px;border:1px solid var(--line);border-radius:4px;background:var(--field);max-width:88px}
 .pg-title{color:var(--grey);font-size:11px;margin:8px 2px 4px;text-transform:uppercase;letter-spacing:.04em}
-.fld{width:100%;height:28px;border:1px solid var(--line);border-radius:4px;padding:0 6px;background:#fff}
+.fld{width:100%;height:28px;border:1px solid var(--line);border-radius:4px;padding:0 6px;background:var(--field)}
 .res{display:block;width:100%;text-align:left;border:0;background:none;padding:5px 6px;border-radius:4px;line-height:1.3}
 .res:hover{background:var(--accent-ll)}
-.res mark{background:#ffe08a}
+.res mark{background:var(--mark);color:var(--paper-ink)}
 .kv{display:flex;align-items:center;gap:6px;padding:5px 2px;border-bottom:1px solid var(--line2)}
 .kv .g{flex:1;overflow:hidden;text-overflow:ellipsis}
 .badge{display:inline-block;padding:1px 7px;border-radius:9px;font-size:11px;font-weight:600}
-.badge.ok{background:#e4f3e5;color:var(--ok)} .badge.bad{background:#fbe5e5;color:var(--danger)} .badge.warn{background:#fff1d6;color:var(--warn)}
+.badge.ok{background:var(--ok-bg);color:var(--ok)} .badge.bad{background:var(--bad-bg);color:var(--danger)} .badge.warn{background:var(--warn-bg);color:var(--warn)}
 
-#findbar{position:absolute;top:10px;right:14px;z-index:35;display:flex;align-items:center;gap:3px;background:var(--panel);padding:5px 6px;border-radius:10px;box-shadow:var(--shadow2)}
+#findbar{position:absolute;top:10px;right:14px;z-index:35;display:flex;flex-direction:column;gap:4px;background:var(--panel);padding:5px 6px;border-radius:10px;box-shadow:var(--shadow2)}
+#findbar .row{display:flex;align-items:center;gap:3px}
+#findbar .row.rep{padding-left:31px}
+#findbar .row.rep .btn{height:28px;padding:0 11px;border-radius:14px;font-size:12px}
+#findbar .ib.on{background:var(--accent-l);color:var(--accent-dd)}
+/* Straighten page: preview with guide lines */
+.deskew{display:flex;flex-direction:column;gap:10px;align-items:stretch}
+.deskew-view{align-self:center;max-width:100%;max-height:46vh;border:1px solid var(--line);background:var(--paper)}
+.deskew-row{display:flex;align-items:flex-end;gap:10px}
+.deskew-row label{display:flex;flex-direction:column;align-items:flex-start;gap:4px;flex:1;color:var(--ink2);font-size:12px}
+.dlg .deskew-row input{height:30px;width:120px;flex:none;border:1px solid var(--line);border-radius:4px;padding:0 6px}
+/* Preview of the automatically detected form fields */
+#detectbar{position:absolute;top:10px;left:50%;transform:translateX(-50%);z-index:36;display:flex;align-items:center;gap:8px;max-width:calc(100% - 28px);background:var(--panel);padding:7px 8px 7px 14px;border-radius:10px;box-shadow:var(--shadow2)}
+#detectbar .txt{color:var(--ink2);font-size:12px;line-height:1.35}
+#detectbar .btn{height:28px;padding:0 12px;border-radius:14px;font-size:12px;white-space:nowrap}
+.fd-layer{position:absolute;inset:0;z-index:7;pointer-events:none}
+.fd-box{position:absolute;box-sizing:border-box;border:1.5px solid var(--accent);background:rgb(14 124 134 / .18);border-radius:2px;pointer-events:auto;cursor:pointer}
+.fd-box.signature{border-color:var(--ok);background:rgb(46 125 50 / .16)}
+.fd-box.radio{border-radius:50%}
+.fd-box:hover{background:rgb(14 124 134 / .32)}
+.fd-box.off{border:1.5px dashed var(--grey);background:rgb(145 143 144 / .12)}
+.fd-box .tag{position:absolute;left:2px;top:1px;max-width:calc(100% - 4px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:9px;line-height:11px;color:var(--accent-dd);pointer-events:none}
+.fd-box.signature .tag{color:var(--ok)}
+.fd-box.off .tag{color:var(--grey);text-decoration:line-through}
 #findbar input[type=text]{width:220px;height:28px;border:1px solid var(--line);border-radius:4px;padding:0 6px}
 #findbar .cnt{min-width:58px;text-align:center;color:var(--ink2);font-size:12px}
 #findbar label{display:flex;align-items:center;gap:3px;font-size:12px;color:var(--ink2);padding:0 3px}
@@ -230,7 +261,7 @@ body.pdf-editing .textLayer,body.pdf-editing .annotationLayer{pointer-events:non
 
 #statusbar{display:none;justify-content:space-between;padding:2px 12px;font-size:12px;color:var(--ink2);background:var(--panel);border-top:1px solid var(--line);flex:none}
 #statusbar.on{display:flex}
-.scrim{position:fixed;inset:0;background:rgb(24 18 16 / .4);z-index:100;display:flex;align-items:center;justify-content:center}
+.scrim{position:fixed;inset:0;background:var(--scrim);z-index:100;display:flex;align-items:center;justify-content:center}
 .dlg{background:var(--panel);border-radius:12px;box-shadow:var(--shadow2);width:480px;max-width:calc(100vw - 40px);max-height:calc(100vh - 40px);display:flex;flex-direction:column}
 .dlg.wide{width:760px}
 .dlg h3{margin:0;padding:16px 20px 10px;font-size:16px}
@@ -240,7 +271,7 @@ body.pdf-editing .textLayer,body.pdf-editing .annotationLayer{pointer-events:non
 .fr.chk{grid-template-columns:150px 1fr}
 .fr.full{display:block}
 .fr>span{color:var(--ink2)}
-.fr input[type=text],.fr input[type=password],.fr input[type=number],.fr select,.fr textarea{width:100%;height:30px;border:1px solid var(--line);border-radius:4px;padding:0 6px;background:#fff}
+.fr input[type=text],.fr input[type=password],.fr input[type=number],.fr select,.fr textarea{width:100%;height:30px;border:1px solid var(--line);border-radius:4px;padding:0 6px;background:var(--field)}
 .fr textarea{height:80px;padding:5px;resize:vertical}
 .fr input:focus,.fr select:focus,.fr textarea:focus{outline:2px solid var(--accent);border-color:transparent}
 .fr.info{display:block;color:var(--ink2);background:var(--accent-ll);padding:8px 10px;border-radius:6px}
@@ -250,16 +281,16 @@ body.pdf-editing .textLayer,body.pdf-editing .annotationLayer{pointer-events:non
 .prog{height:6px;background:var(--line2);border-radius:3px;overflow:hidden;margin-top:10px}
 .prog i{display:block;height:100%;background:var(--accent);width:0;transition:width .15s}
 #toasts{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:200;display:flex;flex-direction:column;align-items:center;gap:6px;pointer-events:none}
-.toast{background:var(--ink);color:#fff;padding:8px 16px;border-radius:18px;box-shadow:var(--shadow2);max-width:640px}
+.toast{background:var(--toast);color:#fff;padding:8px 16px;border-radius:18px;box-shadow:var(--shadow2);max-width:640px}
 .toast.err{background:var(--danger)} .toast.ok{background:var(--accent-d)}
-.ctx{position:fixed;z-index:150;background:#fff;border-radius:8px;box-shadow:var(--shadow2);padding:4px;min-width:190px}
+.ctx{position:fixed;z-index:150;background:var(--panel);border-radius:8px;box-shadow:var(--shadow2);padding:4px;min-width:190px}
 .ctx button{display:flex;gap:8px;width:100%;padding:6px 12px;border:0;background:none;border-radius:4px;text-align:left}
 .ctx button:hover{background:var(--accent-l)}
 .ctx button:disabled{opacity:.4}
 .ctx hr{border:0;border-top:1px solid var(--line2);margin:3px 0}
-.sign-pad{width:100%;height:150px;border:1px solid var(--line);border-radius:6px;background:#fff;touch-action:none;display:block}
+.sign-pad{width:100%;height:150px;border:1px solid var(--line);border-radius:6px;background:var(--paper);touch-action:none;display:block}
 .stamp-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:4px}
-.stamp-btn{border:2px solid;border-radius:6px;background:#fff;padding:6px;font-weight:700;font-size:11px;text-align:center}
+.stamp-btn{border:2px solid;border-radius:6px;background:var(--paper);padding:6px;font-weight:700;font-size:11px;text-align:center}
 .stamp-btn:hover{box-shadow:var(--shadow)}
 body.presenting #topbar,body.presenting #doc-toolbar,body.presenting #propbar,body.presenting #left-panel,body.presenting #right-rail,body.presenting #right-panel,body.presenting #quick-tools,body.presenting #doc-banner,body.presenting #page-controls{display:none!important}
 body.reading #doc-toolbar,body.reading #propbar,body.reading #left-panel,body.reading #right-rail,body.reading #right-panel,body.reading #quick-tools{display:none!important}
@@ -271,12 +302,31 @@ body.presenting #viewer{background:#000;padding:0}
 .cursor-hand .textLayer{pointer-events:none}
 .cursor-grabbing #viewer{cursor:grabbing}
 
-/* Always a light, high-contrast appearance, even when Windows runs in dark mode. */
+/* Appearance (Preferences > General): light is the default, even when Windows runs in dark mode.
+   Input fields always get their colors explicitly so they are readable in every case. */
 :root{color-scheme:light}
-:where(input,textarea,select,option){background-color:#fff;color:var(--ink)}
-:where(input,textarea)::placeholder{color:#7a7778;opacity:1}
-.note-pop textarea,.cm .act input,.cm .act select{background:#fff;color:var(--ink)}
+:where(input,textarea,select,option){background-color:var(--field);color:var(--ink)}
+:where(input,textarea)::placeholder{color:var(--ph);opacity:1}
+.note-pop textarea,.cm .act input,.cm .act select{background:var(--field);color:var(--ink)}
 .cm .tx{color:var(--ink)}
+
+/* Dark appearance: only the variables change. main.js sets data-theme on the root element
+   ("Dark", or "Same as Windows" when Windows is dark). */
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --accent-l:#143d42; --accent-ll:#1c2f31; --accent-dd:#aee3e7; --accent:#4fc3cb; --link:#80d5db;
+  --ink:#eceae8; --ink2:#c0bdbb; --grey:#9a9897; --line:#42454b; --line2:#33363b;
+  --bg:#1b1c1f; --panel:#26282c; --canvas:#111214; --danger:#f07b7b; --ok:#74c479; --warn:#e3ad52;
+  --shadow:0 2px 10px rgb(0 0 0 / .5); --shadow2:0 10px 34px rgb(0 0 0 / .6);
+  --field:#1a1b1e; --field-line:#5a5d64; --head:#2e3035; --hover:#233a3d; --ph:#8f8d8c;
+  --toast:#3d4047; --banner:#3b3216; --banner-line:#5d4d1d; --info-line:#2a5b61;
+  --ok-bg:#1f3a22; --bad-bg:#472224; --warn-bg:#40331a; --scrim:rgb(0 0 0 / .55);
+}
+:root[data-theme="dark"] .toast{border:1px solid var(--line)}
+/* The logo has dark lettering: in the dark appearance it sits on a light plate. */
+:root[data-theme="dark"] img[src$="logo.svg"]{background:var(--paper);border-radius:8px;padding:6px 10px;box-sizing:content-box}
+/* The PDF page is paper: system controls on it (check boxes, select lists) stay light too. */
+.pv-page{color-scheme:light}
 
 /* Voreinstellungen */
 .dlg.pref{width:820px;height:min(600px,calc(100vh - 40px))}
@@ -295,7 +345,7 @@ body.presenting #viewer{background:#000;padding:0}
 .pref-chk input{margin-top:3px}
 .pref-help{margin:5px 0 0 0;color:var(--grey);font-size:12px;line-height:1.4;max-width:520px}
 .pref-row.locked .pref-chk{color:var(--ink2);cursor:not-allowed}
-.pref-lock{margin-left:8px;padding:1px 8px;border-radius:9px;background:#fbe5e5;color:var(--danger);font-size:11px;font-weight:700;white-space:nowrap}
+.pref-lock{margin-left:8px;padding:1px 8px;border-radius:9px;background:var(--bad-bg);color:var(--danger);font-size:11px;font-weight:700;white-space:nowrap}
 
 /* Switching between "Home" and "All tools": the view slides in, cards appear one after another,
    the indicator under the tab slides to the new tab (see motion.js). */

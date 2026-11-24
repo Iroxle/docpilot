@@ -85,10 +85,20 @@ function refreshMenu() {
   }));
 }
 
+/**
+ * Appearance from Preferences (General): 'light' (default), 'dark' or 'system' (same as Windows).
+ * Applies to the menu bar, window frame and system dialogs; the interface itself is colored by styles.css.
+ */
+function applyAppearance() {
+  const v = settings().appearance;
+  nativeTheme.themeSource = v === 'dark' || v === 'system' ? v : 'light';
+  if (win) win.setBackgroundColor(nativeTheme.shouldUseDarkColors ? '#1b1c1f' : '#f3f4f6');
+}
+
 function createWindow() {
   win = new BrowserWindow({
     width: 1440, height: 920, minWidth: 900, minHeight: 600, show: false,
-    title: APP_NAME, backgroundColor: '#f3f4f6',
+    title: APP_NAME, backgroundColor: nativeTheme.shouldUseDarkColors ? '#1b1c1f' : '#f3f4f6',
     icon: path.join(__dirname, '..', 'assets', 'icon.ico'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -120,8 +130,8 @@ if (!app.requestSingleInstanceLock()) {
   });
   app.on('open-file', (e, p) => { e.preventDefault(); requestOpen([p]); });
   app.whenReady().then(() => {
-    // Always a light appearance: input fields should be light and readable even in dark Windows mode.
-    nativeTheme.themeSource = 'light';
+    // Appearance from Preferences. The default is light, even when Windows runs in dark mode.
+    applyAppearance();
     protocol.handle('app', async (req) => {
       const rel = decodeURIComponent(new URL(req.url).pathname).replace(/^\/+/, '');
       // Fonts for preview and input field: only faces from the catalog, addressed by their number.
@@ -231,7 +241,7 @@ ipcMain.handle('dp:recent-remove', (_e, p) => {
   refreshMenu();
 });
 ipcMain.handle('dp:settings-get', () => readJson('settings.json', {}));
-ipcMain.handle('dp:settings-set', (_e, s) => { writeJson('settings.json', s); refreshMenu(); return true; });
+ipcMain.handle('dp:settings-set', (_e, s) => { writeJson('settings.json', s); applyAppearance(); refreshMenu(); return true; });
 
 // Windows fonts for new text in the PDF. Only files from the fonts folder are readable.
 const FONT_DIR = path.join(process.env.WINDIR || 'C:\\Windows', 'Fonts');

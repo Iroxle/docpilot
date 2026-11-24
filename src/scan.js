@@ -6,6 +6,8 @@ import { loadForEdit } from './pdf/ops.js';
 import { eraseText, classify } from './pdf/inpaint.js';
 import { normalizeForOcr, removeRules, grayToRgba, findBullet, isPlusMinus, stopKind, strokeWidth, isMarker, groupParagraphs, inkBox, hasDot, hasUmlaut } from './pdf/ocrlayout.js';
 import { familyInfo, cssFamily, cssFamilyReady } from './fonts.js';
+import { skewAngle, rotateGray, rotatePoint, usableSkew } from './pdf/deskew.js';
+import { canvasBytes } from './util.js';
 
 export const OCR_LANGS = [['deu+eng', 'German + English'], ['deu', 'German'], ['fra', 'French'], ['ita', 'Italian'], ['eng', 'English'], ['deu+fra+ita+eng', 'All four languages']];
 
@@ -105,15 +107,24 @@ export async function recognize(app, pages, { lang = 'deu+eng', dpi = 'auto', pr
       const { canvas, viewport } = await app.viewer.renderToCanvas(p, res, { noAnnots: true });
       // Dark text on a white background for text recognition, also for dark-mode screenshots.
       const ctx = canvas.getContext('2d');
-      const G = normalizeForOcr(ctx.getImageData(0, 0, canvas.width, canvas.height));
+      let G = normalizeForOcr(ctx.getImageData(0, 0, canvas.width, canvas.height));
+      // Skewed page: straighten it for reading. The words are then mapped back to their position in the skewed
+      // image, so the recognized text lies exactly over the image (search, copy, edit).
+      const skew = usableSkew(skewAngle(G));
+      let vp = viewport;
+      if (skew) {
+        const cx = (G.width - 1) / 2; const cy = (G.height - 1) / 2;
+        G = rotateGray(G, -skew);
+        vp = { scale: viewport.scale, skewed: true, convertToPdfPoint: (x, y) => viewport.convertToPdfPoint(...rotatePoint(x, y, skew, cx, cy)) };
+      }
       // Table lines and separators disturb the recognition of the lines next to them: remove them first.
       removeRules(G, { minLen: Math.round(res * 0.2), minLenV: Math.round(res * 0.6), maxThick: Math.max(3, Math.round(res * 0.03)), gap: Math.round(res * 0.045) });
       ctx.putImageData(new ImageData(grayToRgba(G), G.width, G.height), 0, 0);
       const { data } = await worker.recognize(canvas, {}, { blocks: true, text: false });
       canvas.width = 0;
-      const { words, pars } = await layoutPage(data, viewport, G);
+      const { words, pars } = await layoutPage(data, vp, G);
       const keep = words.filter((w) => isNew(info, [w.x + w.width / 2, w.y + w.height * 0.3]));
-      if (keep.length) result.push({ page: p, words: keep, pars });
+      if (keep.length) result.push({ page: p, words: keep, pars, skew });
     }
   } finally { await worker.terminate(); }
   return result;
@@ -132,6 +143,61 @@ function isNew(info, c) {
   const img = images.filter(({ o }) => inside(c, o.bbox)).pop();
   if (!img) return false;
   return !texts.some(({ o, k }) => k > img.k && inside(c, o.bbox));
+}
+
+// --- Schiefe Scans ------------------------------------------------------------------------
+
+/** Is the page a scan? An image (or several strips) covers it, and there is no visible text. */
+export function isScanPage(info) {
+  return info.imageShare >= 0.5 && !info.layers.texts.some(({ o }) => !o.invisible) && (info.layers.texts.length > 0 || !info.hasText);
+}
+/** Rotation angle of a page as displayed: { angle, confidence } (see skewAngle). */
+export async function pageSkew(app, i, dpi = 150) {
+  const { canvas } = await app.viewer.renderToCanvas(i, dpi, { noAnnots: true });
+  const G = normalizeForOcr(canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height));
+  canvas.width = 0;
+  return skewAngle(G);
+}
+/**
+ * Scanned pages among the given ones that are skewed: [{ page, angle }]. Pages with visible text and
+ * pages whose angle cannot be determined reliably never belong to them.
+ */
+export async function skewedScans(app, pages) {
+  const doc = app.doc; const edit = await loadForEdit(doc.bytes);
+  const out = [];
+  for (const p of pages) {
+    if (!isScanPage(await pageInfo(doc, p, edit))) continue;
+    const angle = usableSkew(await pageSkew(app, p));
+    if (angle) out.push({ page: p, angle });
+  }
+  return out;
+}
+/**
+ * Renders a page, rotates it straight by the angle and returns the image as JPEG. The corners that become
+ * free when rotating get the color of the paper (from the edge of the page). dpi: resolution of the new image.
+ */
+export async function straightenedPage(app, i, angle, dpi) {
+  const proxy = app.doc.page(i);
+  const vp = proxy.getViewport({ scale: dpi / 72, rotation: 0 });
+  const src = document.createElement('canvas'); src.width = Math.ceil(vp.width); src.height = Math.ceil(vp.height);
+  const sctx = src.getContext('2d', { alpha: false, willReadFrequently: true });
+  await proxy.render({ canvas: src, canvasContext: sctx, viewport: vp, intent: 'print', annotationMode: pdfjs.AnnotationMode.DISABLE }).promise;
+  // Paper color: most common light tone along the edges.
+  const W = src.width; const H = src.height; const m = Math.max(2, Math.round(Math.min(W, H) * 0.01));
+  const edge = [sctx.getImageData(0, m, W, 1).data, sctx.getImageData(0, H - 1 - m, W, 1).data, sctx.getImageData(m, 0, 1, H).data, sctx.getImageData(W - 1 - m, 0, 1, H).data];
+  const ch = [[], [], []];
+  for (const d of edge) for (let k = 0; k < d.length; k += 16) { ch[0].push(d[k]); ch[1].push(d[k + 1]); ch[2].push(d[k + 2]); }
+  let paper = ch.map((c) => median(c));
+  if (0.299 * paper[0] + 0.587 * paper[1] + 0.114 * paper[2] < 170) paper = [255, 255, 255];
+  const out = document.createElement('canvas'); out.width = W; out.height = H;
+  const ctx = out.getContext('2d', { alpha: false });
+  ctx.fillStyle = `rgb(${paper.join(',')})`; ctx.fillRect(0, 0, W, H);
+  ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+  ctx.translate(W / 2, H / 2); ctx.rotate((-angle * Math.PI) / 180); ctx.drawImage(src, -W / 2, -H / 2);
+  src.width = 0;
+  const jpeg = await canvasBytes(out, 'image/jpeg', 0.88);
+  out.width = 0;
+  return jpeg;
 }
 
 const median = (a) => { const s = [...a].sort((p, q) => p - q); return s[Math.floor(s.length / 2)]; };
@@ -312,7 +378,10 @@ export async function layoutPage(data, viewport, G) {
       const l = lines[k];
       for (const w of l.words) {
         const a = viewport.convertToPdfPoint(w.box[0], l.base); const c = viewport.convertToPdfPoint(w.box[2], l.base);
-        words.push({ text: w.text, x: Math.min(a[0], c[0]), y: Math.min(a[1], c[1]), width: Math.abs(c[0] - a[0]), height: px / viewport.scale, line: k, par });
+        // Skewed page (straightened for reading): the word gets the start point, length and direction of its
+        // line in the skewed image and is later written rotated. This way the text lies exactly over the image.
+        if (viewport.skewed) words.push({ text: w.text, x: a[0], y: a[1], width: Math.hypot(c[0] - a[0], c[1] - a[1]), height: px / viewport.scale, line: k, par, angle: Math.atan2(c[1] - a[1], c[0] - a[0]) });
+        else words.push({ text: w.text, x: Math.min(a[0], c[0]), y: Math.min(a[1], c[1]), width: Math.abs(c[0] - a[0]), height: px / viewport.scale, line: k, par });
       }
     }
   });

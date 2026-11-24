@@ -5,6 +5,7 @@ import { Viewer } from './viewer.js';
 import { Overlay } from './overlay.js';
 import { PageEditor } from './editor.js';
 import { Find } from './find.js';
+import { FieldDetector } from './formauto.js';
 import { Panels, Organizer } from './panels.js';
 import { Tools } from './tools.js';
 import { h, $, $$, icon, ibtn, toast, errToast, busy, formDialog, messageBox, fmtDate, fmtSize, canvasBytes } from './util.js';
@@ -60,6 +61,7 @@ class App {
     // All fonts like in Word, loaded in the background; new text starts in Word's default font.
     this.fontsReady = loadFonts().then(() => this.editor.useWordDefault());
     this.find = new Find(this);
+    this.fieldDetect = new FieldDetector(this);
     this.organizer = new Organizer(this);
     this.tools = new Tools(this);
     this.overlay.tools = this.tools;
@@ -73,6 +75,8 @@ class App {
     this.bindKeys(); this.bindDrop(); this.bindHand(); this.bindPaste();
     window.__app = this;
     this.applySettings();
+    // "Same as Windows": follow the switch between light and dark Windows immediately.
+    matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => this.applyAppearance());
     const initial = await dp.ready();
     // Preference "Reopen the last open documents".
     if (this.settings.restoreDocs && !initial.length) {
@@ -98,6 +102,16 @@ class App {
     this.find.setDefaults({ caseSensitive: !!s.searchCase, wholeWord: !!s.searchWhole });
     if (this.grid) this.applyGrid();
     this.drawRulers();
+    this.applyAppearance();
+  }
+  /**
+   * Appearance from Preferences: light (default), dark or same as Windows. The colors are defined as
+   * variables in styles.css; here only the attribute on the root element is set. Takes effect immediately, without a restart.
+   */
+  applyAppearance() {
+    const want = this.settings?.appearance;
+    const dark = want === 'dark' || (want === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+    document.documentElement.dataset.theme = dark ? 'dark' : 'light';
   }
 
   userName() { return this.settings.userName || 'User'; }
@@ -179,7 +193,9 @@ class App {
     );
     dp.setTitle(this.view === 'doc' && this.doc ? `${this.doc.dirty ? '*' : ''}${this.doc.name}` : '');
   }
-  setView(v) { this.view = v; $('#view-home').hidden = v !== 'home'; $('#view-tools').hidden = v !== 'tools'; $('#view-doc').hidden = v !== 'doc'; this.renderTabs(); }
+  /** Closes floating windows that belong to a position in the document (note, mini toolbar). */
+  closeFloats() { document.querySelectorAll('.note-pop,.mini').forEach((n) => n.remove()); }
+  setView(v) { if (v !== 'doc') this.closeFloats(); this.view = v; $('#view-home').hidden = v !== 'home'; $('#view-tools').hidden = v !== 'tools'; $('#view-doc').hidden = v !== 'doc'; this.renderTabs(); }
   showHome() { this.setView('home'); this.renderHome(); }
   showTools() { this.setView('tools'); }
   showDocView() { this.setView('doc'); }
@@ -251,6 +267,8 @@ class App {
       this.viewer.reload(data);
       this.onPage(this.viewer.current);
       this.editor.invalidate();
+      this.find.docChanged(data);
+      this.fieldDetect.docChanged();
       if (this.editor.on && !data.pages) for (const n of this.viewer.nodes) this.editor.renderPage(n.i);
       if (this.organizer.open) this.organizer.render();
       if (this.panels.current && this.panels.current !== 'comments' && this.panels.current !== 'search') this.panels.refresh();
@@ -261,7 +279,7 @@ class App {
     }
   }
   activate(doc) {
-    if (this.doc && this.doc !== doc) { this.editor.disable(); this.organizer.hide(); if (this.tools.group) this.tools.closeGroup(); this.overlay.setTool('select'); this.find.close(); }
+    if (this.doc && this.doc !== doc) { this.editor.disable(); this.organizer.hide(); if (this.tools.group) this.tools.closeGroup(); this.overlay.setTool('select'); this.find.close(); this.fieldDetect.cancel(); this.closeFloats(); }
     this.doc = doc;
     this.setView('doc');
     this.viewer.attach(doc);
@@ -308,7 +326,7 @@ class App {
     if (i < 0) return true;
     this.docs.splice(i, 1);
     if (this.doc === d) {
-      this.editor.disable(); this.organizer.hide(); if (this.tools.group) this.tools.closeGroup();
+      this.editor.disable(); this.organizer.hide(); this.fieldDetect.cancel(); this.closeFloats(); if (this.tools.group) this.tools.closeGroup();
       this.viewer.doc = null; this.viewer.clear(); this.doc = null;
       if (this.docs.length) this.activate(this.docs[Math.min(i, this.docs.length - 1)]); else this.showHome();
     } else this.renderTabs();
@@ -359,7 +377,7 @@ class App {
     const cmds = {
       save: () => this.save(), 'save-as': () => this.saveAs(), revert: () => this.revert(), print: () => this.print(), properties: () => this.properties(), 'close-tab': () => this.closeDoc(d),
       export: () => T.exportAs(arg), undo: () => this.undoRedo('undo'), redo: () => this.undoRedo('redo'), delete: () => this.deleteSelected(), 'select-all': () => this.selectAllText(), deselect: () => { window.getSelection().removeAllRanges(); this.overlay.select(null); },
-      find: () => this.find.open(), 'find-advanced': () => this.panels.show('search'), tool: () => T.selectTool(arg), 'tool-group': () => T.openGroup(arg), 'tool-edit': () => T.openGroup('edit'), 'tool-organize': () => T.openGroup('organize'), 'tool-compress': () => T.compress(), 'tool-pdfa': () => T.pdfa(), 'tool-encrypt': () => T.encryptDialog(), 'tool-digital-sign': () => T.openGroup('certs'), 'sign-setup': () => T.signSetup('signature'), panel: () => this.panels.show(arg),
+      find: () => this.find.open(), replace: () => this.find.open({ replace: true }), 'find-advanced': () => this.panels.show('search'), tool: () => T.selectTool(arg), 'tool-group': () => T.openGroup(arg), 'tool-edit': () => T.openGroup('edit'), 'tool-organize': () => T.openGroup('organize'), 'tool-compress': () => T.compress(), 'tool-pdfa': () => T.pdfa(), 'tool-encrypt': () => T.encryptDialog(), 'tool-digital-sign': () => T.openGroup('certs'), 'sign-setup': () => T.signSetup('signature'), panel: () => this.panels.show(arg),
       'view-rotate': () => v.rotateView(arg), 'first-page': () => v.goto(0), 'prev-page': () => v.prev(), 'next-page': () => v.next(), 'last-page': () => v.goto(d.numPages - 1), 'goto-page': () => this.gotoDialog(), 'nav-back': () => v.back(), 'nav-forward': () => v.forward(), layout: () => v.setLayout(arg), 'zoom-in': () => v.zoomStep(1), 'zoom-out': () => v.zoomStep(-1), zoom: () => v.setZoom(arg),
       'toggle-rulers': () => this.toggleRulers(), 'toggle-grid': () => this.toggleGrid(), 'toggle-right': () => (this.panels.current ? this.panels.hide() : this.panels.show('thumbs')), 'toggle-left': () => { $('#left-panel').classList.toggle('collapsed'); v.scheduleRender(); }, 'reading-mode': () => document.body.classList.toggle('reading'), fullscreen: () => this.presentation(), speak: () => this.speak(arg),
     };
@@ -474,7 +492,7 @@ class App {
     await messageBox('About DocPilot', h('div', { style: { textAlign: 'center' } }, h('img', { src: 'assets/logo.svg', alt: '', style: { height: '64px', margin: '8px 0 14px' } }), h('div', {}, `Version ${await dp.version()}`), h('p', { style: { color: 'var(--ink2)' } }, 'Includes PDF.js, pdf-lib, Tesseract OCR and node-forge under their respective open-source licenses.')));
   }
   async shortcuts() {
-    const list = [['Ctrl+O', 'Open'], ['Ctrl+S', 'Save'], ['Ctrl+P', 'Print'], ['Ctrl+F', 'Find'], ['Ctrl+Z / Y', 'Undo / Redo'], ['Ctrl+Plus / Minus', 'Zoom'], ['Ctrl+0 / 1 / 2', 'Page / 100% / Width'], ['V', 'Select'], ['H', 'Hand'], ['Z', 'Marquee zoom'], ['S', 'Sticky note'], ['U', 'Highlight'], ['N', 'Pencil'], ['X', 'Text box'], ['R', 'Rectangle'], ['Arrow keys, Page Up/Down', 'Navigation'], ['Del', 'Delete selection'], ['Esc', 'Cancel tool']];
+    const list = [['Ctrl+O', 'Open'], ['Ctrl+S', 'Save'], ['Ctrl+P', 'Print'], ['Ctrl+F', 'Find'], ['Ctrl+Shift+H', 'Find and replace'], ['Ctrl+Z / Y', 'Undo / Redo'], ['Ctrl+Plus / Minus', 'Zoom'], ['Ctrl+0 / 1 / 2', 'Page / 100% / Width'], ['V', 'Select'], ['H', 'Hand'], ['Z', 'Marquee zoom'], ['S', 'Sticky note'], ['U', 'Highlight'], ['N', 'Pencil'], ['X', 'Text box'], ['R', 'Rectangle'], ['Arrow keys, Page Up/Down', 'Navigation'], ['Del', 'Delete selection'], ['Esc', 'Cancel tool']];
     await messageBox('Keyboard shortcuts', h('table', { class: 'tbl' }, list.map(([a, b]) => h('tr', {}, h('th', {}, a), h('td', {}, b)))));
   }
 
@@ -606,4 +624,7 @@ class App {
   }
 }
 
+// Before the first paint: the main window has already set the appearance from Preferences
+// (light, dark or same as Windows), so the interface starts in the right colors right away.
+document.documentElement.dataset.theme = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 new App().init().catch((e) => { console.error(e); document.body.append(h('pre', { style: { padding: '20px', color: '#c00' } }, String(e.stack || e))); });

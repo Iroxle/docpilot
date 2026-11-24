@@ -290,7 +290,14 @@ export async function getStyledFont(doc, family, style, text, readFont) {
   }
   const synth = { fakeBold: !!(want & 1) && !(k & 1), fakeItalic: !!(want & 2) && !(k & 2) };
   const key = `${fam ? fam.name : family}/${k}`;
-  if (doc.__fonts.has(key)) return { font: doc.__fonts.get(key), ...synth };
+  if (doc.__fonts.has(key)) {
+    const cached = doc.__fonts.get(key);
+    // pdf-lib embeds a font only once. If the document has been finalized since the last text (e.g. because
+    // a page was copied to read an image), newly added characters would be missing from the font subset and
+    // would no longer be readable afterwards. So have it embedded again when saving.
+    if (cached.alreadyEmbedded && cached.embedder?.subset) cached.alreadyEmbedded = false;
+    return { font: cached, ...synth };
+  }
   let font = null;
   if (fam && readFont) {
     const src = fam.faces[k];
@@ -769,7 +776,7 @@ export function cryptoRandom() {
 }
 
 /**
- * Invisible text over rasterized or scanned pages. words: [{text,x,y,width,height,line?,par?}] in
+ * Invisible text over rasterized or scanned pages. words: [{text,x,y,width,height,line?,par?,angle?}] in
  * page coordinates. Words on the same line get a space up to the next word, so search and
  * copy find the words separately. pars: details per paragraph ({font, bold, tz}); each paragraph is marked as
  * its own block (like editor text), with the font that was recognized in the image.
@@ -790,16 +797,18 @@ export function drawInvisibleWords(page, font, words, pars, ctx) {
     list.forEach((w, j) => {
       const next = list[j + 1];
       const sameLine = next && w.line !== undefined && next.line === w.line && next.x > w.x;
+      // Word of a skewed line (angle: direction of the line in the image, in radians): write it rotated.
+      const co = w.angle ? Math.cos(w.angle) : 1; const si = w.angle ? Math.sin(w.angle) : 0;
       const text = sanitizeFor(font, w.text) + (sameLine ? ' ' : '');
       if (!text.trim()) return;
       const size = Math.max(1, w.height);
       const natural = font.widthOfTextAtSize(text, size);
-      const target = sameLine ? next.x - w.x : w.width;
+      const target = sameLine ? (w.angle ? Math.hypot(next.x - w.x, next.y - w.y) : next.x - w.x) : w.width;
       const stretch = natural > 0 && target > 0 ? target / natural : 1;
       // In q/Q so the invisible render mode does not carry over to text drawn later.
       page.pushOperators(
         pushGraphicsState(), beginText(), setFontAndSize(fontKey, size), setTextRenderingMode(TextRenderingMode.Invisible),
-        setTextMatrix(stretch, 0, 0, 1, w.x, w.y), showText(font.encodeText(text)), endText(), popGraphicsState(),
+        setTextMatrix(stretch * co, stretch * si, -si, co, w.x, w.y), showText(font.encodeText(text)), endText(), popGraphicsState(),
       );
     });
     if (props) page.pushOperators(PDFOperator.of('EMC'));
@@ -835,6 +844,26 @@ export function replacePageWithImage(bytes, pageIdx, jpeg) {
       if (keep.size()) fresh.node.set(PDFName.of('Annots'), keep);
     }
     d.removePage(pageIdx);
+    gcObjects(d);
+  });
+}
+
+/**
+ * Replaces the content of pages with one page-sized image each (straightened scan). list: [{ page, jpeg }].
+ * The page itself stays (size, rotation, form fields, links); its previous content including recognized text
+ * is removed.
+ */
+export function setPageImages(bytes, list) {
+  return edit(bytes, async (d) => {
+    for (const { page, jpeg } of list) {
+      const p = d.getPage(page);
+      const img = await d.embedJpg(jpeg);
+      const { x, y, width, height } = p.getCropBox();
+      p.node.set(PDFName.of('Contents'), d.context.obj([]));
+      p.node.set(PDFName.of('Resources'), d.context.obj({}));
+      p.contentStream = undefined; p.contentStreamRef = undefined; p.fontKey = undefined; p.font = undefined;
+      p.drawImage(img, { x, y, width, height });
+    }
     gcObjects(d);
   });
 }
@@ -972,12 +1001,26 @@ export async function analyze(bytes) {
 // --- Formulare -------------------------------------------------------------------------
 /** type: text|multiline|checkbox|radio|dropdown|list|button|signature */
 export function addFormField(bytes, pageIdx, rect, o) {
+  return edit(bytes, async (d) => placeField(d, await d.embedFont(StandardFonts.Helvetica), pageIdx, rect, o));
+}
+/**
+ * Creates several fields in one step (automatic detection). list: [{ page, rect, type, name, value? }].
+ * The fields get neither border nor background: the line or box is already on the page.
+ */
+export function addFormFields(bytes, list) {
   return edit(bytes, async (d) => {
+    const font = await d.embedFont(StandardFonts.Helvetica);
+    for (const o of list) placeField(d, font, o.page, o.rect, { ...o, plain: true });
+  });
+}
+function placeField(d, font, pageIdx, rect, o) {
+  {
+    // (Block only so the indentation of the existing code stays.)
     const form = d.getForm();
     const page = d.getPage(pageIdx);
     const [x0, y0, x1, y1] = rect;
-    const box = { x: x0, y: y0, width: x1 - x0, height: y1 - y0, borderWidth: 1, borderColor: rgb(0.57, 0.56, 0.56), backgroundColor: rgb(1, 1, 1) };
-    const font = await d.embedFont(StandardFonts.Helvetica);
+    const box = o.plain ? { x: x0, y: y0, width: x1 - x0, height: y1 - y0, borderWidth: 0 }
+      : { x: x0, y: y0, width: x1 - x0, height: y1 - y0, borderWidth: 1, borderColor: rgb(0.57, 0.56, 0.56), backgroundColor: rgb(1, 1, 1) };
     const name = o.name;
     if (form.getFieldMaybe(name) && o.type !== 'radio') throw new Error(`A field named "${name}" already exists.`);
     let f;
@@ -986,7 +1029,10 @@ export function addFormField(bytes, pageIdx, rect, o) {
         f = form.createTextField(name);
         if (o.type === 'multiline') f.enableMultiline();
         if (o.value) f.setText(o.value);
-        f.addToPage(page, box); f.updateAppearances(font); break;
+        f.addToPage(page, box);
+        // Detected fields: fixed font size matching the height instead of a font that fills a tall box.
+        if (o.plain) { try { f.setFontSize(Math.max(7, Math.min(11, Math.round((y1 - y0) * 0.62)))); } catch { /* stays automatic */ } }
+        f.updateAppearances(font); break;
       case 'checkbox':
         f = form.createCheckBox(name); f.addToPage(page, box); break;
       case 'radio': {
@@ -1013,7 +1059,25 @@ export function addFormField(bytes, pageIdx, rect, o) {
     }
     if (o.required && f.enableRequired) f.enableRequired();
     if (o.readOnly && f.enableReadOnly) f.enableReadOnly();
-  });
+  }
+}
+
+/** All field names and the areas of all field widgets per page: { names, widgets: [{ page, rect }] }. */
+export async function listFieldWidgets(bytes) {
+  const d = await loadForEdit(bytes);
+  const pages = d.getPages();
+  const names = []; const widgets = [];
+  for (const f of d.getForm().getFields()) {
+    names.push(f.getName());
+    for (const w of widgetsOf(f)) {
+      const pref = w.P();
+      let page = pref ? pages.findIndex((p) => p.ref === pref) : -1;
+      if (page < 0) page = pages.findIndex((p) => { const a = p.node.Annots(); return a && a.asArray().some((r) => d.context.lookup(r) === w.dict); });
+      const r = w.getRectangle();
+      if (page >= 0 && r) widgets.push({ page, rect: [r.x, r.y, r.x + r.width, r.y + r.height] });
+    }
+  }
+  return { names, widgets };
 }
 
 function widgetsOf(field) { return field.acroField.getWidgets(); }

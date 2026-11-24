@@ -192,6 +192,7 @@ export class Viewer {
     n.layers = { text, annotDiv, hl, markup, ov };
     this.app.overlay.renderPage(n.i);
     this.app.editor?.renderPage(n.i);
+    this.app.fieldDetect?.paintPage(n.i);
 
     try {
       const content = await doc.pageText(n.i);

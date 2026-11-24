@@ -7,38 +7,107 @@
 <p align="center">View, edit, comment on and sign PDFs.<br>A Windows PDF editor with a familiar, easy-to-use layout.</p>
 
 <p align="center">
-  <img alt="Platform: Windows 10/11" src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0e7c86">
-  <img alt="Version 1.0.1" src="https://img.shields.io/badge/version-1.0.1-0e7c86">
-  <img alt="Built with Electron" src="https://img.shields.io/badge/built%20with-Electron-47848f">
-  <img alt="Offline OCR" src="https://img.shields.io/badge/OCR-offline-2e7d32">
-  <img alt="License: all rights reserved" src="https://img.shields.io/badge/license-all%20rights%20reserved-555">
+  <a href="https://github.com/Iroxle/docpilot/releases/latest"><img alt="Latest version" src="https://img.shields.io/github/v/release/Iroxle/docpilot?style=for-the-badge&label=version&color=0e7c86"></a>
+  <img alt="Platform: Windows 10/11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-0e7c86?style=for-the-badge">
+  <img alt="Built with Electron" src="https://img.shields.io/badge/Electron-47848f?style=for-the-badge&logo=electron&logoColor=white">
+  <img alt="Offline OCR" src="https://img.shields.io/badge/OCR-offline-2e7d32?style=for-the-badge">
+  <a href="https://github.com/Iroxle/docpilot/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/Iroxle/docpilot/total?style=for-the-badge&color=555"></a>
 </p>
 
 <p align="center">
   <img src="docs/screenshots/comments.png" alt="DocPilot with a project report open: highlight, underline, sticky note and approval stamp, with the comment list on the right" width="900">
 </p>
 
+<table width="100%">
+  <tr>
+    <td width="50%" valign="top" align="center">
+      <br>
+      <a href="https://github.com/Iroxle/docpilot/releases/latest">
+        <img src="docs/card-download.svg" alt="Download DocPilot" height="96">
+      </a>
+      <h3>Download DocPilot</h3>
+      <p>Get the latest release for Windows 10 and 11:<br>setup, MSI for IT deployment, or portable.</p>
+      <strong><a href="https://github.com/Iroxle/docpilot/releases/latest">Download latest version →</a></strong>
+      <br><br>
+    </td>
+    <td width="50%" valign="top" align="center">
+      <br>
+      <a href="FEATURES.md">
+        <img src="docs/card-features.svg" alt="Features and limitations" height="96">
+      </a>
+      <h3>Features and limitations</h3>
+      <p>Everything DocPilot can do, tool by tool,<br>and an honest list of what it cannot do yet.</p>
+      <strong><a href="FEATURES.md">View all features →</a></strong>
+      <br><br>
+    </td>
+  </tr>
+</table>
+
+<details>
+<summary><strong>Who is this for?</strong></summary>
+
+DocPilot is for people and teams on Windows who work with PDFs every day and want one program for it: reading, commenting, editing text and images, filling in and signing forms, redacting, converting to and from Office, and making scans searchable and editable. Everything runs on your own PC. Documents are never uploaded, and text recognition works offline.
+
+For IT departments there is an MSI for silent, machine-wide installation, and JavaScript in PDFs and Office macros stay blocked unless an administrator enables them by policy.
+</details>
+
+<details>
+<summary><strong>Recent changes</strong></summary>
+
+- **2026-11-24 (1.0.2):** Find and replace in the whole document, including recognized text in scans.
+- **2026-11-24 (1.0.2):** Form fields are detected automatically, with a preview before they are created.
+- **2026-11-24 (1.0.2):** Tables arrive as real tables in Word, Excel and PowerPoint exports.
+- **2026-11-24 (1.0.2):** Skewed scans are straightened for text recognition; new "Straighten page" command.
+- **2026-11-24 (1.0.2):** Dark appearance: Light, Dark or Same as Windows.
+
+<details>
+<summary><strong>Older</strong></summary>
+
+- **2026-11-23 (1.0.1):** First public release. Clean recognition and editing of scans with tables, logos and image strips.
+
+</details>
+
+The full list is in [CHANGELOG.md](CHANGELOG.md).
+</details>
+
+<details>
+<summary><strong>Table of contents</strong></summary>
+
+- [Overview](#overview)
+- [Screenshots](#screenshots)
+- [What to download](#what-to-download)
+- [Technology](#technology)
+- [Development](#development)
+- [Releases](#releases)
+- [Deployment in organizations](#deployment-in-organizations)
+- [Security](#security)
+- [Contributing](#contributing)
+- [License](#license)
+
+</details>
+
 ---
 
 ## Overview
 
-DocPilot is a Windows program for working with PDF files. The interface uses a familiar layout: menu bar, tabs, tools pane on the left, quick tools on the side, sidebar on the right and page controls at the bottom right. It is distributed as an MSI installer.
+DocPilot is a Windows program for working with PDF files. The interface uses a familiar layout: menu bar, tabs, tools pane on the left, quick tools on the side, sidebar on the right and page controls at the bottom right. It is available as a setup program, as an MSI for IT deployment and as a portable version.
 
 | Area | Selected features |
 |---|---|
 | View | Zoom, page layouts, rotate, reading mode, full screen, rulers, grid, find, read out loud |
+| Find and replace | Replace text in the whole document, including recognized text in scans; "Replace all" as a single undo step |
 | Comment | Highlight, sticky notes, text boxes, shapes, drawing, stamps, replies, XFDF |
 | Edit | Change, move and add text directly, move and resize images, header & footer, watermark, Bates |
 | Fonts | All fonts like in Word (including Office cloud fonts such as Aptos), default font from Word |
 | Pages | Move, rotate, delete, insert, extract, split, combine |
-| Forms | Fill in, create fields, export/import data, JavaScript only after approval by IT |
+| Forms | Fill in, create fields or have them detected automatically, export/import data, JavaScript only after approval by IT |
 | Fill and sign | Fill in and sign, digital ID, sign digitally and validate |
 | Protect | Password (AES-256), permissions, redact, sanitize |
-| Convert | Export to Word, Excel, PowerPoint, image, HTML, text. PDF from images, Office files, scanner |
-| Scans | Offline text recognition (DE, EN, FR, IT), automatic detection of scanned documents, edit recognized text in the image, paste screenshots with Ctrl+V |
-| More | Compress, compare, measure, PDF/A |
+| Convert | Export to Word, Excel, PowerPoint (tables as real tables, numbers and dates as values), image, HTML, text. PDF from images, Office files, scanner |
+| Scans | Offline text recognition (DE, EN, FR, IT), automatic detection of scanned documents, read and straighten skewed scans, edit recognized text in the image, paste screenshots with Ctrl+V |
+| More | Compress, compare, measure, PDF/A, light or dark appearance |
 
-The complete list, including all known limitations, is in **[FEATURES.md](FEATURES.md)**.
+The complete list, including all known limitations, is in **[FEATURES.md](FEATURES.md)**. What is new in each version is listed in **[CHANGELOG.md](CHANGELOG.md)**.
 
 ## Screenshots
 
@@ -63,9 +132,29 @@ The complete list, including all known limitations, is in **[FEATURES.md](FEATUR
       <p align="center"><b>Preferences</b><br><sub>Clearly structured, with offline text recognition.</sub></p>
     </td>
   </tr>
+  <tr>
+    <td colspan="2" valign="top">
+      <img src="docs/screenshots/dark.png" alt="Dark appearance with the find and replace bar open above a document">
+      <p align="center"><b>Dark appearance and find and replace</b><br><sub>Light, dark or the same as Windows; pages stay white like paper. Replace text in the whole document.</sub></p>
+    </td>
+  </tr>
 </table>
 
 <p align="center"><sub>The document shown is a fictional sample report.</sub></p>
+
+## What to download
+
+| OS | Architecture | Format | Best for | Download link |
+|---|---|---|---|---|
+| **Windows 10 / 11** | x64 | `.exe` (setup) | Most people. Installs for your user, no administrator rights needed. | [DocPilot setup for Windows](https://github.com/Iroxle/docpilot/releases/latest/download/DocPilot-Setup-x64.exe) |
+| **Windows 10 / 11** | x64 | `.msi` | IT departments. Installs for all users, supports silent installation. | [DocPilot MSI for Windows](https://github.com/Iroxle/docpilot/releases/latest/download/DocPilot-x64.msi) |
+| **Windows 10 / 11** | x64 | `.exe` (portable) | Trying it out or a USB stick. Runs without installation. | [DocPilot portable for Windows](https://github.com/Iroxle/docpilot/releases/latest/download/DocPilot-Portable-x64.exe) |
+
+All versions and their checksums (`SHA256SUMS.txt`) are on the [releases page](https://github.com/Iroxle/docpilot/releases).
+
+- **Windows warning:** The installers are not digitally signed yet. Windows SmartScreen may show "Windows protected your PC". Choose "More info" and then "Run anyway".
+- **Portable version:** It does not register PDF as a file type and starts a little slower, because it unpacks itself on every start.
+- **Other systems:** DocPilot uses Windows features (fonts, Office conversion, scanner, policies) and is not available for macOS or Linux.
 
 ## Technology
 
@@ -77,7 +166,7 @@ The complete list, including all known limitations, is in **[FEATURES.md](FEATUR
 | [Tesseract.js](https://tesseract.projectnaptha.com/) | Text recognition (OCR) | Apache 2.0 |
 | [node-forge](https://github.com/digitalbazaar/forge) | Digital signatures (PKCS#7) | BSD/GPL (BSD chosen) |
 | docx, ExcelJS, PptxGenJS, mammoth | Office export and import | MIT / BSD |
-| electron-builder (WiX) | MSI installer | MIT |
+| electron-builder (NSIS, WiX) | Setup, MSI and portable builds | MIT |
 
 Components with an AGPL license were deliberately avoided. The full list of included open-source components and their license texts is in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
@@ -91,19 +180,26 @@ src/             User interface
   viewer.js      Page rendering
   overlay.js     Comment tools
   editor.js      Edit PDF (text and images)
+  find.js        Find and replace
+  formauto.js    Detect form fields automatically: preview and creation
   fonts.js       Fonts for input and preview
   fontpicker.js  Font picker like Word
   scan.js        Text recognition, scan detection, editing recognized text in images
   tools.js       All tool groups
   panels.js      Sidebars
-  prefs.js       Preferences (Ctrl+K)
+  prefs.js       Preferences (Ctrl+K), including the appearance (light, dark, same as Windows)
+  styles.css     Look; all interface colors as variables (dark: only different values)
   pdf/           PDF core: page operations, content stream, comments, signatures,
                  removing text from images (inpaint.js), analysis of
-                 recognized text: bullets, punctuation, paragraphs (ocrlayout.js)
-scripts/         Build, icons (npm run icons) and third-party notices (npm run notices)
+                 recognized text: bullets, punctuation, paragraphs (ocrlayout.js),
+                 replacing within a paragraph including rewrap (replace.js), detecting
+                 form positions from lines, boxes and circles (formdetect.js), detecting
+                 tables for export (tables.js), rotation angle of skewed scans (deskew.js)
+scripts/         Build, icons (npm run icons), third-party notices (npm run notices), release notes
 tests/           Automated tests (app and PDF core)
 assets/          Logo and icons
-docs/            Screenshots for this README
+docs/            Screenshots and images for this README
+.github/         Release workflow and pull request template
 ```
 
 ## Development
@@ -118,9 +214,10 @@ npm ci
 |---|---|
 | `npm start` | Build and start the app |
 | `npm run build` | Build only the user interface to `dist/renderer` |
-| `npm run test:core` | PDF core tests (21 tests, about 1 minute) |
-| `npm test` | App tests in the real Electron app (46 flows, about 18 minutes) |
-| `npm run dist` | Build the MSI installer to `release/` |
+| `npm run test:core` | PDF core tests (25 tests, about 1 minute) |
+| `npm test` | App tests in the real Electron app (50 flows, about 23 minutes) |
+| `npm run dist` | Build the setup, MSI and portable version to `release/` |
+| `npm run dist:msi` | Build only the MSI |
 | `npm run icons` | Create the app icons from `assets/emblem.svg` |
 | `npm run notices` | Regenerate `THIRD_PARTY_NOTICES.md` after dependency updates |
 | `npm run lint` | Check the code |
@@ -129,16 +226,26 @@ Individual app tests can be run with a name filter, for example `node tests/run.
 
 The app tests run against the development build. With `DP_TEST_POLICY=allow`, JavaScript and macros are allowed for the tests; without the variable, the IT block applies. The variable only works in the development build, never in the installed program. Because of the security fuses, the built program can no longer be remote-controlled with Playwright.
 
-## Deployment
+## Releases
+
+Installers are built by GitHub Actions ([release.yml](.github/workflows/release.yml)) on a Windows runner:
+
+1. Set the new version in `package.json` and add a section for it to [CHANGELOG.md](CHANGELOG.md).
+2. Push a tag with the same version, for example `v1.0.3`.
+
+The workflow checks the code, builds the setup, the MSI and the portable version, and publishes them as a release with checksums. The release text is the changelog section of that version. Running the workflow by hand ("Run workflow") builds the installers without publishing a release.
+
+## Deployment in organizations
 
 ```bash
-msiexec /i DocPilot-1.0.1-x64.msi /qn
+msiexec /i DocPilot-x64.msi /qn
 ```
 
-- Installs for all users of the PC and requires administrator rights.
+- The MSI installs for all users of the PC and requires administrator rights.
 - Start menu and desktop shortcuts; PDF is registered as a file type.
-- A new MSI replaces the installed version automatically. Increase the version in `package.json` for every new release.
-- **Open:** The MSI is not yet digitally signed. Without a code signing certificate, Windows SmartScreen warns and AppLocker may block it.
+- A new MSI replaces the installed version automatically.
+- The setup (`.exe`) installs per user instead. Use one of the two on a PC, not both.
+- **Open:** The installers are not yet digitally signed. Without a code signing certificate, Windows SmartScreen warns and AppLocker may block them.
 
 ## Security
 
@@ -148,11 +255,15 @@ msiexec /i DocPilot-1.0.1-x64.msi /qn
 - HTML is converted without JavaScript and without internet access.
 - Electron fuses: the `.exe` cannot be misused as a Node.js interpreter, through `NODE_OPTIONS` or with a debugger, and it only loads its own verified app archive.
 
+## Contributing
+
+Bug reports and suggestions are welcome as [issues](https://github.com/Iroxle/docpilot/issues). For pull requests there is a [template](.github/pull_request_template.md) that asks what was changed, how it was tested and under which terms the contribution is made. Please run `npm run lint` and `npm run test:core` before opening one.
+
 ---
 
 ## License
 
-Copyright © 2026 Iroxle. All rights reserved. The source code is published for viewing and reference only; see [LICENSE](LICENSE).
+Copyright © 2026 Iroxle. All rights reserved. The official installers from the releases page may be installed and used; the source code is published for viewing and reference. See [LICENSE](LICENSE) for the exact terms.
 Third-party components are licensed under their own terms; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 All trademarks are the property of their respective owners.

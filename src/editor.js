@@ -1,6 +1,7 @@
 // "Edit PDF": change existing text and images directly on the page.
 import { h, ibtn, cssColor, rgbToHex, hexToRgb, errToast, toast, $ } from './util.js';
-import { loadForEdit, saveDoc, getStyledFont, drawTextBlock, textBlockBox, fillRects } from './pdf/ops.js';
+import { loadForEdit, saveDoc, getStyledFont, drawTextBlock, textBlockBox, fillRects, sanitizeFor, gcObjects } from './pdf/ops.js';
+import { blockLines, replacedText } from './pdf/replace.js';
 import { PDFDocument, PDFOperator, PDFName, PDFString, rgb } from '@cantoo/pdf-lib';
 import { eraseInImages, sampleColors, insertImageRows } from './scan.js';
 import { interpret, removeTextInPage, removeImageInPage, moveImage, deleteImage, imageRole, subtractRect, EDIT_TAG } from './pdf/content.js';
@@ -11,30 +12,49 @@ import { fontPicker } from './fontpicker.js';
 
 export { mapFamily };
 
-/** Groups text items into lines and paragraphs. */
-export function buildBlocks(items) {
-  const parts = items.filter((t) => t.str && t.str.trim()).map((t) => {
+/**
+ * Groups text items into lines and paragraphs. Slightly rotated text only counts if it is recognized text of a
+ * skewed scanned page, or with allowTilt (export: no text should be missing there).
+ */
+export function buildBlocks(items, allowTilt = false) {
+  const parts = items.map((t, item) => ({ t, item })).filter(({ t }) => t.str && t.str.trim()).map(({ t, item }) => {
     const [a, b, c, d, e, f] = t.transform;
     // The font height is in the vertical axis; the horizontal one also contains a compression.
     const size = Math.hypot(c, d) || Math.hypot(a, b) || t.height;
-    return { str: t.str, x0: e, x1: e + t.width, y: f, size, level: Math.abs(b) < 0.01, mark: t.mark || null };
+    // item: number of the text item on the page. "Replace" uses it to find the position of a search result in the block.
+    // Recognized text of a skewed scanned page is written slightly rotated (it follows the line in the image). It counts
+    // like horizontal text: yEnd is the height of the baseline at its right end.
+    const tilted = (allowTilt || isOcrMark(t.mark)) && Math.abs(b) >= 0.01 && a > 0 && Math.abs(b) <= a * 0.27;
+    return { str: t.str, item, x0: e, x1: e + t.width, y: f, yEnd: tilted ? f + (t.width * b) / Math.hypot(a, b) : f, size, level: Math.abs(b) < 0.01 || tilted, mark: t.mark || null };
   }).filter((p) => p.level);
   parts.sort((p, q) => q.y - p.y || p.x0 - q.x0);
   const lines = [];
   for (const p of parts) {
     // Text from different text blocks of the editor (marker "mark") is never merged.
-    const line = lines.find((l) => l.mark === p.mark && Math.abs(l.y - p.y) < p.size * 0.4 && Math.abs(l.size - p.size) < p.size * 0.35 && p.x0 - l.x1 < p.size * 2.2 && l.x0 - p.x1 < p.size);
-    if (line) { line.parts.push(p); line.x0 = Math.min(line.x0, p.x0); line.x1 = Math.max(line.x1, p.x1); }
-    else lines.push({ y: p.y, size: p.size, x0: p.x0, x1: p.x1, parts: [p], mark: p.mark });
+    // The comparison uses the baseline at the nearest end of the line: for straight text this is the same
+    // height everywhere, for a skewed scan line it rises or falls from item to item.
+    const line = lines.find((l) => l.mark === p.mark && Math.abs((p.x0 >= l.x1 - p.size ? l.yR - p.y : p.x1 <= l.x0 + p.size ? l.yL - p.yEnd : l.y - p.y)) < p.size * 0.4
+      && Math.abs(l.size - p.size) < p.size * 0.35 && p.x0 - l.x1 < p.size * 2.2 && l.x0 - p.x1 < p.size * (l.skew || p.yEnd !== p.y ? 2.2 : 1));
+    if (line) {
+      line.parts.push(p);
+      if (p.x0 < line.x0) { line.x0 = p.x0; line.yL = p.y; }
+      if (p.x1 > line.x1) { line.x1 = p.x1; line.yR = p.yEnd; }
+      if (p.yEnd !== p.y) line.skew = true;
+    } else lines.push({ y: p.y, yL: p.y, yR: p.yEnd, skew: p.yEnd !== p.y, size: p.size, x0: p.x0, x1: p.x1, parts: [p], mark: p.mark });
   }
+  // Skewed line: its height is the baseline at the left end (newly set text starts there).
+  for (const l of lines) if (l.skew) l.y = l.yL;
   for (const l of lines) {
     l.parts.sort((p, q) => p.x0 - q.x0);
     l.text = '';
     let last = null;
     for (const p of l.parts) {
       if (last !== null && p.x0 - last > l.size * 0.18 && !l.text.endsWith(' ') && !p.str.startsWith(' ')) l.text += ' ';
+      p.at = l.text.length;
       l.text += p.str; last = p.x1;
     }
+    const lead = l.text.length - l.text.trimStart().length;
+    for (const p of l.parts) p.at -= lead;
     l.text = l.text.trim();
   }
   lines.sort((p, q) => q.y - p.y || p.x0 - q.x0);
@@ -54,7 +74,7 @@ export function buildBlocks(items) {
     const top = b.lines[0].y + size * 0.92; const bottom = b.lines[b.lines.length - 1].y - size * 0.24;
     const lineHeight = b.lines.length > 1 ? (b.lines[0].y - b.lines[b.lines.length - 1].y) / (b.lines.length - 1) : size * 1.2;
     // Line breaks are kept so the paragraph keeps its shape while editing.
-    return { kind: 'text', text: b.lines.map((l) => l.text).join('\n'), rect: [x0, bottom, x1, top], size, lineHeight, baseline: b.lines[0].y, mark: b.mark, lines: b.lines.map((l) => ({ text: l.text, x0: l.x0, x1: l.x1 })) };
+    return { kind: 'text', text: b.lines.map((l) => l.text).join('\n'), rect: [x0, bottom, x1, top], size, lineHeight, baseline: b.lines[0].y, mark: b.mark, lines: b.lines.map((l) => ({ text: l.text, x0: l.x0, x1: l.x1, parts: l.parts.map((p) => ({ item: p.item, at: p.at })) })) };
   });
 }
 const isOcrMark = (m) => typeof m === 'string' && m.startsWith('ocr');
@@ -98,13 +118,14 @@ export function joinOcrLines(lines, size) {
     sure[k] = noRoom[k] && /^\p{Ll}/u.test(first);
   }
   const proven = sure.some(Boolean);
-  let text = lines[0].text;
+  let text = lines[0].text; const seps = [];
   for (let k = 1; k < lines.length; k++) {
     const soft = sure[k] || (proven && noRoom[k]);
-    text += !soft ? '\n' : /[-–]$/.test(lines[k - 1].text) ? '' : ' ';
-    text += lines[k].text;
+    seps.push(!soft ? '\n' : /[-–]$/.test(lines[k - 1].text) ? '' : ' ');
+    text += seps[k - 1] + lines[k].text;
   }
-  return { text, width: W, wrapped: lines.length > 1 && !text.includes('\n') ? true : text.split('\n').length < lines.length };
+  // seps: separators between the lines as they appear in the text ('\n' = separate line, otherwise running text).
+  return { text, width: W, seps, wrapped: lines.length > 1 && !text.includes('\n') ? true : text.split('\n').length < lines.length };
 }
 
 const overlap = (a, b) => Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0])) * Math.max(0, Math.min(a[3], b[3]) - Math.max(a[1], b[1]));
@@ -112,19 +133,25 @@ const overlap = (a, b) => Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0]
 export function attachMarks(items, textObjs) {
   if (!textObjs.some((o) => o.mark)) return items;
   return items.map((t) => {
-    const [, , c, d, e, f] = t.transform;
+    const [a, b, c, d, e, f] = t.transform;
     const size = Math.hypot(c, d) || t.height || 1;
-    const r = [e, f - size * 0.2, e + Math.max(t.width, 0.1), f + size * 0.8];
+    const width = Math.max(t.width, 0.1);
+    // A slightly rotated text item (recognized text of a skewed scanned page) is checked in sections along its
+    // direction, otherwise its right end would mathematically lie on the neighboring line.
+    const len = Math.hypot(a, b) || 1; const dx = a / len; const dy = b / len;
+    const n = Math.abs(dy) < 0.004 || Math.abs(dy) > 0.27 || dx <= 0 ? 1 : Math.max(1, Math.ceil(width / (size * 2)));
+    const pieces = [];
+    for (let k = 0; k < n; k++) { const u = (width * k) / n; pieces.push([e + dx * u, f + dy * u - size * 0.2, e + dx * u + width / n, f + dy * u + size * 0.8]); }
     // Sum up the area per text block: a line of many small words belongs to its block, even if
     // a single larger text item of another block (e.g. hidden text under an image) has more area.
     const by = new Map();
-    for (const o of textObjs) { const s = overlap(r, o.bbox); if (s > 0) by.set(o.mark || '', (by.get(o.mark || '') || 0) + s); }
+    for (const o of textObjs) { let s = 0; for (const r of pieces) s += overlap(r, o.bbox); if (s > 0) by.set(o.mark || '', (by.get(o.mark || '') || 0) + s); }
     let mark = ''; let score = 0;
     for (const [m, s] of by) if (s > score) { score = s; mark = m; }
     return mark ? { ...t, mark } : t;
   });
 }
-const newMark = () => `e${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+export const newMark = () => `e${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 
 export class PageEditor {
   constructor(app) {
@@ -161,8 +188,12 @@ export class PageEditor {
   invalidate() { this.cache.clear(); }
 
   async objects(i) {
+    // The cache only applies to exactly this state of exactly this document. "Replace" and other commands
+    // also query the text blocks without "Edit PDF" being open; without this check they would get the blocks
+    // of the previous document after switching documents.
+    if (this.cacheFor !== this.doc.bytes) { this.cache.clear(); this.cacheFor = this.doc.bytes; }
     if (this.cache.has(i)) return this.cache.get(i);
-    const proxyDoc = this.doc;
+    const proxyDoc = this.doc; const stamp = proxyDoc.bytes;
     let ocrMarks = new Map(); let markProps = new Map();
     const [content, parsed] = await Promise.all([proxyDoc.pageText(i), (async () => {
       const d = await loadForEdit(proxyDoc.bytes);
@@ -192,7 +223,7 @@ export class PageEditor {
             const j = joinOcrLines(b.lines, b.size);
             // Only running text gets a fixed width and reflows when edited. Separate lines stay as they are.
             if (j.wrapped) {
-              b.text = j.text; b.fixedWidth = true;
+              b.text = j.text; b.seps = j.seps; b.fixedWidth = true;
               // A little leeway so unchanged text wraps the same way as in the image.
               b.rect = [b.rect[0], b.rect[1], b.rect[0] + j.width * 1.03, b.rect[3]];
             }
@@ -235,7 +266,8 @@ export class PageEditor {
     // When objects overlap, a click grabs the topmost one, i.e. the one drawn last.
     // That is why the frames follow the drawing order (a later frame is on top in the window).
     const out = [...images, ...blocks].map((o, k) => ({ o, k })).sort((a, b) => (a.o.order - b.o.order) || (a.k - b.k)).map((x) => x.o);
-    this.cache.set(i, out);
+    // Only remember it if the document has not been switched or changed in the meantime.
+    if (this.cacheFor === stamp) this.cache.set(i, out);
     return out;
   }
 
@@ -545,39 +577,83 @@ export class PageEditor {
 
   /** Really remove the old text and set the new text. */
   async replaceText(o, i, text, rect, style) {
+    await this.apply(async (bytes) => saveDoc(await this.setBlockText(await loadForEdit(bytes), i, o, text, rect, style)), i);
+  }
+
+  /**
+   * Sets the text of a block again in the loaded document d and returns the document (a reloaded one after covering
+   * text in an embedded object). Core of "Edit text" and of "Replace".
+   */
+  async setBlockText(d, i, o, text, rect, style, info = null) {
     const s = { family: o.family, bold: o.bold, italic: o.italic, color: o.color, size: o.size, align: o.align, hscale: o.hscale || 1, ...style };
     // Recognized paragraph with unchanged text (only moved or formatted): lines stay as in the image.
     const keepLines = o.ocr && o.origText && text === o.text;
     const body = keepLines ? o.origText : text;
     const box = keepLines ? { ...o, fixedWidth: false } : o;
-    await this.apply(async (bytes) => {
-      const d = await loadForEdit(bytes);
-      const page = d.getPage(i);
-      // Recognized text from a scan: really remove the old letters from the image, new text in their color.
-      if (o.ocr) {
-        const r = await this.eraseScanText(d, i, o);
-        if (!style.color && r.color) s.color = r.color;
-        // Remember the image background: text that runs beyond the image (new lines at the bottom, longer line)
-        // gets the same background there. Otherwise, e.g., light text from a dark-mode screenshot would be
-        // invisible on the white paper.
-        const bg = o.ocrBg || r.bg || this.sampleOcr(i, o)?.bg;
-        if (bg && !s.bg) s.bg = bg;
-      } else if (o.bg && !s.bg) s.bg = o.bg;
-      // Only remove the text of this block, not other text lying below or above it.
-      const removed = removeTextInPage(page, [o.rect], { mark: o.mark || null });
-      if (!removed) {
-        // Text lies in an embedded object: cover instead of remove.
-        const b2 = await saveDoc(d);
-        const covered = await fillRects(b2, i, [o.rect]);
-        const d2 = await loadForEdit(covered);
-        await this.drawInto(d2, i, body, rect || o.rect, s, box);
-        return saveDoc(d2);
-      }
-      // More lines than before in a pasted image: make room there, the rest moves down.
-      if (o.ocr && !keepLines && !rect) await this.makeRoom(d, i, o, body, s, box);
-      await this.drawInto(d, i, body, rect || o.rect, s, box);
+    const page = d.getPage(i);
+    // Recognized text from a scan: really remove the old letters from the image, new text in their color.
+    if (o.ocr) {
+      const r = await this.eraseScanText(d, i, o);
+      if (!style.color && r.color) s.color = r.color;
+      // Remember the image background: text that runs beyond the image (new lines at the bottom, longer line)
+      // gets the same background there. Otherwise, e.g., light text from a dark-mode screenshot would be
+      // invisible on the white paper.
+      const bg = o.ocrBg || r.bg || this.sampleOcr(i, o)?.bg;
+      if (bg && !s.bg) s.bg = bg;
+    } else if (o.bg && !s.bg) s.bg = o.bg;
+    // Only remove the text of this block, not other text lying below or above it.
+    const removed = removeTextInPage(page, [o.rect], { mark: o.mark || null });
+    if (!removed) {
+      // Text lies in an embedded object: cover instead of remove.
+      const b2 = await saveDoc(d);
+      const covered = await fillRects(b2, i, [o.rect]);
+      const d2 = await loadForEdit(covered);
+      await this.drawInto(d2, i, body, rect || o.rect, s, box);
+      if (info) info.covered = true;
+      return d2;
+    }
+    // More lines than before in a pasted image: make room there, the rest moves down.
+    if (o.ocr && !keepLines && !rect) await this.makeRoom(d, i, o, body, s, box);
+    await this.drawInto(d, i, body, rect || o.rect, s, box);
+    return d;
+  }
+
+  /**
+   * Find and replace: changes the text of several blocks in one step (one step for "Undo").
+   * edits: [{ i, o, hits: [{ a, b }], with, mark? }] (page, text block from objects(), ranges in the block's text,
+   * replacement text, marker for the new block). Returns false if the document may not be changed.
+   * If old text could only be covered instead of removed, the entry carries covered: true afterwards.
+   * opts.skipCheck: the confirmation for protected or signed documents has already been asked.
+   */
+  async replaceMany(edits, opts = {}) {
+    if (!edits.length) return false;
+    this.commitInput();
+    await this.app.fontsReady;
+    // Per page from bottom to top: if room is made in a pasted image, only what lies below it moves.
+    const order = [...edits].sort((p, q) => p.i - q.i || p.o.rect[1] - q.o.rect[1]);
+    const pages = [...new Set(order.map((e) => e.i))];
+    // Measure widths in a separate document (see makeRoom).
+    const ruler = await PDFDocument.create();
+    for (const e of order) {
+      const o = e.o;
+      const flow = !o.fixedWidth && o.lines.length > 1 ? joinOcrLines(o.lines, o.size) : null;
+      const { font } = await getStyledFont(ruler, o.family, o, blockLines(o).text + e.with, readFont);
+      const hs = o.hscale || 1;
+      e.text = replacedText(o, e.hits, e.with, flow && { soft: flow.seps.map((x) => x !== '\n'), width: flow.width }, (t) => font.widthOfTextAtSize(sanitizeFor(font, t), o.size) * hs).replace(/\s+$/, '');
+    }
+    this.selected = null;
+    const ok = await this.doc.mutate(async (bytes) => {
+      let d = await loadForEdit(bytes);
+      for (const e of order) d = await this.setBlockText(d, e.i, e.o, e.text, null, e.mark ? { mark: e.mark } : {}, e);
+      // Remove old versions of the page content (with the replaced text) and outdated font subsets from the file.
+      await d.flush();
+      gcObjects(d);
       return saveDoc(d);
-    }, i);
+    }, { pages, skipCheck: !!opts.skipCheck });
+    this.cache.clear();
+    if (ok && this.on) for (const i of pages) this.renderPage(i);
+    this.renderBar();
+    return ok;
   }
 
   /**
@@ -645,7 +721,7 @@ export class PageEditor {
     const bg = Array.isArray(s.bg) && s.bg.length === 3 && Math.min(...s.bg) < 0.94 ? s.bg : null;
     const pieces = bg ? outsideImage(page, textBlockBox(font, text, area, opts)) : [];
     // Marked as its own block so it does not merge with other text when moved later.
-    const props = { Id: PDFString.of(newMark()) };
+    const props = { Id: PDFString.of(s.mark || newMark()) };
     if (bg) props.Bg = bg.map((v) => Math.round(v * 1000) / 1000);
     if (s.align === 'right') props.Align = PDFString.of('right');
     page.pushOperators(PDFOperator.of('BDC', [PDFName.of(EDIT_TAG), d.context.obj(props)]));

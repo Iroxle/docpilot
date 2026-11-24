@@ -1,7 +1,7 @@
 {
   "name": "docpilot",
   "productName": "DocPilot",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "DocPilot - view, edit, comment on and sign PDFs",
   "author": "Iroxle",
   "private": true,
@@ -12,7 +12,9 @@
     "lint": "eslint src electron scripts tests",
     "test": "npm run build && node tests/run.js",
     "icons": "electron scripts/make-icons.js",
-    "dist": "npm run build && electron-builder --win msi --x64",
+    "dist": "npm run build && electron-builder --win --x64 --publish never",
+    "dist:msi": "npm run build && electron-builder --win msi --x64 --publish never",
+    "release-notes": "node scripts/release-notes.js",
     "test:core": "node tests/run-core.js",
     "notices": "node scripts/notices.js"
   },
@@ -68,14 +70,38 @@
     "win": {
       "target": [
         {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
           "target": "msi",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
           "arch": [
             "x64"
           ]
         }
       ],
-      "icon": "assets/icon.ico",
-      "artifactName": "DocPilot-${version}-x64.${ext}"
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "DocPilot",
+      "uninstallDisplayName": "DocPilot",
+      "artifactName": "DocPilot-Setup-x64.${ext}"
+    },
+    "portable": {
+      "artifactName": "DocPilot-Portable-x64.${ext}"
     },
     "msi": {
       "perMachine": true,
@@ -84,6 +110,7 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "DocPilot",
+      "artifactName": "DocPilot-x64.${ext}",
       "upgradeCode": "E1A8691B-2960-47E5-8330-BDBDA666DA63",
       "additionalWixArgs": ["-ext", "WixUtilExtension"]
     },

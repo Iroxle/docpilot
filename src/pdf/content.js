@@ -121,6 +121,8 @@ const decodeName = (s) => s.replace(/#([0-9a-fA-F]{2})/g, (_, h) => String.fromC
 
 function streamBytes(s) {
   if (s instanceof PDFRawStream) return decodePDFRawStream(s).decode();
+  // Content that pdf-lib itself wrote in this session (not saved yet): read it uncompressed.
+  if (s && typeof s.getUnencodedContents === 'function') return s.getUnencodedContents();
   if (s instanceof PDFStream) return s.getContents();
   return new Uint8Array(0);
 }
@@ -396,7 +398,11 @@ function rewrite(page, bytes, edits) {
   out += s.slice(pos);
   const ctx = page.node.context;
   const stream = ctx.flateStream(fromLatin1(out), {});
-  page.node.set(PDFName.of('Contents'), ctx.register(stream));
+  // As a list, the way pdf-lib expects it after the first drawing (it appends further streams).
+  page.node.set(PDFName.of('Contents'), ctx.obj([ctx.register(stream)]));
+  // pdf-lib remembers per page the stream it draws into. That one is now replaced: whatever is drawn afterwards
+  // must go into a new stream, otherwise it would be lost (e.g. changing several paragraphs of a page in a row).
+  page.contentStream = undefined; page.contentStreamRef = undefined;
 }
 
 const overlapShare = (b, r) => {

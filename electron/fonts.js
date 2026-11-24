@@ -150,7 +150,7 @@ class FontCatalog {
       let fam = byName.get(key);
       if (!fam) { fam = { name: f.family, faces: [null, null, null, null], embeddable: false, symbol: f.symbol, cloud: f.cloud, size: 0 }; byName.set(key, fam); }
       const k = (f.bold ? 1 : 0) + (f.italic ? 2 : 0);
-      // Erste Fundstelle gewinnt: Windows-Schriften vor Benutzer-Schriften vor Cloud-Schriften.
+      // First match wins: Windows fonts before user fonts before cloud fonts.
       if (fam.faces[k] !== null) continue;
       const id = this.faces.length;
       this.faces.push({ file: f.file, offset: f.offset, ttc: /\.ttc$/i.test(f.file) });

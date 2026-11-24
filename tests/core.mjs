@@ -13,6 +13,11 @@ import * as annots from '../src/pdf/annots.js';
 import * as sign from '../src/pdf/sign.js';
 import * as inpaint from '../src/pdf/inpaint.js';
 import * as ocrlayout from '../src/pdf/ocrlayout.js';
+import * as replace from '../src/pdf/replace.js';
+import * as formdetect from '../src/pdf/formdetect.js';
+import * as textutil from '../src/textutil.js';
+import * as tables from '../src/pdf/tables.js';
+import * as deskew from '../src/pdf/deskew.js';
 
 const readFont = async (f) => { try { return new Uint8Array(fs.readFileSync(`C:/Windows/Fonts/${f}`)); } catch { return null; } };
 const cases = [];
@@ -603,6 +608,342 @@ test('Invisible text, page labels, JavaScript, analysis, PDF/A, image to PDF', a
   assert.equal((await open(op.bytes)).numPages, 3);
   const rp = await ops.replacePageWithImage(await fixture(1), 0, Uint8Array.from(Buffer.from('/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=', 'base64')));
   assert.equal(await textOf(await open(rp), 1), '');
+});
+
+test('Find and replace: map results to a paragraph, replace in the paragraph, rewrap', async () => {
+  // Search pattern: whitespace matches line breaks, special characters are literal, whole word, match case.
+  assert.ok(replace.searchRegex('Muster AG', {}).test('die muster\nag hat'));
+  assert.equal('Mustermann'.match(replace.searchRegex('Muster', { wholeWord: true })), null);
+  assert.ok(replace.searchRegex('2024', { wholeWord: true }).test('Jahr 2024.'));
+  assert.equal('Jahr 20241'.match(replace.searchRegex('2024', { wholeWord: true })), null);
+  assert.equal('muster'.match(replace.searchRegex('Muster', { caseSensitive: true })), null);
+  assert.ok(replace.searchRegex('a.b(c)', {}).test('xa.b(c)y'));
+  assert.equal('axb(c)'.match(replace.searchRegex('a.b(c)', {})), null);
+
+  // A page as the search sees it: text items with line end, from them the page text and the mapping character -> item.
+  const items = [
+    { str: 'Die Firma Muster' }, { str: ' AG liefert', hasEOL: true },
+    { str: 'jedes Jahr an die Muster', hasEOL: true }, { str: 'AG in Bern.', hasEOL: true },
+    { str: ' ' }, { str: 'Kunde: Muster AG', hasEOL: true }, { str: 'Muster AG (gedreht)' },
+  ];
+  let pageText = ''; const map = [];
+  items.forEach((it, idx) => { for (let k = 0; k < it.str.length; k++) map.push({ item: idx, off: k }); pageText += it.str; if (it.hasEOL) { pageText += ' '; map.push({ item: idx, off: -1 }); } });
+  // The same page as the editor sees it: a paragraph of three lines and a single line. The rotated
+  // text item 6 is in no block.
+  const blocks = [
+    { kind: 'image', rect: [0, 0, 10, 10] },
+    { kind: 'text', lines: [
+      { text: 'Die Firma Muster AG liefert', x0: 0, x1: 135, parts: [{ item: 0, at: 0 }, { item: 1, at: 16 }] },
+      { text: 'jedes Jahr an die Muster', x0: 0, x1: 120, parts: [{ item: 2, at: 0 }] },
+      { text: 'AG in Bern.', x0: 0, x1: 55, parts: [{ item: 3, at: 0 }] },
+    ] },
+    { kind: 'text', lines: [{ text: 'Kunde: Muster AG', x0: 0, x1: 80, parts: [{ item: 5, at: 0 }] }] },
+  ];
+  const re = replace.searchRegex('Muster AG', {});
+  const at = replace.locator(blocks, {});
+  const found = [...pageText.matchAll(re)].map((m) => at(pageText, map, m.index, m.index + m[0].length, re));
+  assert.equal(found.length, 4);
+  // 1: across two text items of the same line, 2: across the line break, 3: single line, 4: no block.
+  assert.deepEqual(found[0], { block: 1, a: 10, b: 19 });
+  const para = replace.blockLines(blocks[1]);
+  assert.equal(para.text.slice(found[0].a, found[0].b), 'Muster AG');
+  assert.equal(found[1].block, 1);
+  assert.equal(para.text.slice(found[1].a, found[1].b), 'Muster\nAG');
+  assert.deepEqual(found[2], { block: 2, a: 7, b: 16 });
+  assert.deepEqual(found[3], { reason: 'no-text' });
+  // A result across two blocks ("Bern. Kunde") cannot be replaced.
+  const across = /Bern\.\s+Kunde/u.exec(pageText);
+  assert.deepEqual(at(pageText, map, across.index, across.index + across[0].length), { reason: 'multiple' });
+
+  // Replace in the paragraph: both positions, the second one joins two lines.
+  const hits = [found[0], found[1]].map(({ a, b }) => ({ a, b }));
+  const r = replace.replaceInBlock(blocks[1], hits, 'Beispiel GmbH', [true, true]);
+  assert.deepEqual(r.lines, ['Die Firma Beispiel GmbH liefert', 'jedes Jahr an die Beispiel GmbH in Bern.']);
+  assert.deepEqual(r.soft, [true]); assert.equal(r.first, 0);
+  // A block with a fixed width (recognized running text) keeps its separators and only wraps when it is set.
+  const flowBlock = { ...blocks[1], seps: [' ', ' '], fixedWidth: true };
+  const ft = replace.blockLines(flowBlock).text;
+  assert.equal(ft, 'Die Firma Muster AG liefert jedes Jahr an die Muster AG in Bern.');
+  const fh = [...ft.matchAll(re)].map((m) => ({ a: m.index, b: m.index + m[0].length }));
+  assert.equal(replace.replacedText(flowBlock, fh, 'Test AG', null, null), 'Die Firma Test AG liefert jedes Jahr an die Test AG in Bern.');
+
+  // Wrap: width = 5 per character, text width 27 characters. Lines before stay, what does not fit moves on.
+  const measure = (t) => t.length * 5;
+  const flow = { soft: [true, true], width: 135 };
+  const out = replace.replacedText(blocks[1], [{ a: found[1].a, b: found[1].b }], 'Beispiel Holding AG', flow, measure).split('\n');
+  assert.equal(out[0], 'Die Firma Muster AG liefert', 'line before the change stays');
+  assert.equal(out.join(' '), 'Die Firma Muster AG liefert jedes Jahr an die Beispiel Holding AG in Bern.');
+  assert.ok(out.length === 3 && out.every((l) => measure(l) <= 135), `every line fits in the column: ${JSON.stringify(out)}`);
+  // Shorter text: nothing is wrapped, the lines stay.
+  assert.deepEqual(replace.replacedText(blocks[1], [{ a: found[0].a, b: found[0].b }], 'X AG', flow, measure).split('\n'), ['Die Firma X AG liefert', 'jedes Jahr an die Muster', 'AG in Bern.']);
+  // No running text (e.g. address, table): a longer line stays one line.
+  assert.deepEqual(replace.replacedText(blocks[1], [{ a: found[0].a, b: found[0].b }], 'Beispiel Holding und Partner AG', { soft: [false, false], width: 135 }, measure).split('\n'),
+    ['Die Firma Beispiel Holding und Partner AG liefert', 'jedes Jahr an die Muster', 'AG in Bern.']);
+  // Running text ends in the middle of the block: the overflow becomes its own line and does not run into the next line.
+  assert.deepEqual(replace.reflow(['aaaa bbbb cccc', 'Neue Zeile'], [false], 50, measure), ['aaaa bbbb', 'cccc', 'Neue Zeile']);
+  assert.deepEqual(replace.reflow(['aaaa bbbb cccc', 'dd'], [true], 50, measure), ['aaaa bbbb', 'cccc dd']);
+});
+
+test('Detect form fields: lines, underscores, boxes, circles, table, names, existing fields', async () => {
+  // Fictional registration form as a real PDF: the detection reads lines and circles from the page content.
+  const d = await PDFDocument.create();
+  const f = await d.embedFont(StandardFonts.Helvetica); const fb = await d.embedFont(StandardFonts.HelveticaBold);
+  const p = d.addPage([595, 842]);
+  const black = rgb(0, 0, 0);
+  const line = (x0, y0, x1, y1, t = 0.7) => p.drawLine({ start: { x: x0, y: y0 }, end: { x: x1, y: y1 }, thickness: t, color: black });
+  p.drawText('Anmeldung zum Kurs', { x: 60, y: 780, size: 18, font: fb });
+  line(60, 772, 535, 772, 1.2);                                   // separator below the heading: not a field
+  p.drawText('Name:', { x: 60, y: 730, size: 11, font: f }); line(130, 728, 330, 728);
+  p.drawText('Vorname:', { x: 60, y: 705, size: 11, font: f }); line(130, 703, 330, 703);
+  p.drawText('Telefon: ____________________', { x: 60, y: 680, size: 11, font: f });   // underscores in the text
+  p.drawText('Betrifft Kurs', { x: 60, y: 652, size: 11, font: f }); line(60, 650, 122, 650);   // underlined text: not a field
+  // Check boxes as small squares, label to the right.
+  p.drawRectangle({ x: 60, y: 620, width: 10, height: 10, borderColor: black, borderWidth: 0.8 }); p.drawText('Newsletter', { x: 76, y: 621, size: 11, font: f });
+  p.drawRectangle({ x: 200, y: 620, width: 10, height: 10, borderColor: black, borderWidth: 0.8 }); p.drawText('Parkplatz', { x: 216, y: 621, size: 11, font: f });
+  // Radio buttons as circles, question to the left of them.
+  p.drawText('Verpflegung:', { x: 60, y: 591, size: 11, font: f });
+  p.drawCircle({ x: 150, y: 595, size: 5, borderColor: black, borderWidth: 0.8 }); p.drawText('Fleisch', { x: 160, y: 591, size: 11, font: f });
+  p.drawCircle({ x: 230, y: 595, size: 5, borderColor: black, borderWidth: 0.8 }); p.drawText('Vegetarisch', { x: 240, y: 591, size: 11, font: f });
+  p.drawCircle({ x: 62, y: 560, size: 2, color: black }); p.drawText('Aufzählungspunkt, kein Optionsfeld', { x: 70, y: 556, size: 11, font: f });
+  // Empty box with a label above it (multiline).
+  p.drawText('Bemerkungen', { x: 60, y: 528, size: 11, font: f });
+  p.drawRectangle({ x: 60, y: 460, width: 300, height: 60, borderColor: black, borderWidth: 0.8 });
+  // Table: header row with text, two empty rows. Columns: Tag | Zeit.
+  for (const y of [420, 400, 380, 360]) line(60, y, 300, y);
+  for (const x of [60, 180, 300]) line(x, 360, x, 420);
+  p.drawText('Tag', { x: 66, y: 406, size: 11, font: fb }); p.drawText('Zeit', { x: 186, y: 406, size: 11, font: fb });
+  // Signature lines with a small label below them.
+  line(60, 280, 240, 280); p.drawText('Ort, Datum', { x: 60, y: 268, size: 9, font: f });
+  line(300, 280, 500, 280); p.drawText('Unterschrift', { x: 300, y: 268, size: 9, font: f });
+  // Frame around a text block: not a field (not empty).
+  p.drawRectangle({ x: 60, y: 180, width: 300, height: 40, borderColor: black, borderWidth: 0.8 }); p.drawText('Hinweis: Die Anmeldung ist verbindlich.', { x: 68, y: 196, size: 10, font: f });
+  // One field already exists: it must not be suggested again.
+  d.getForm().createTextField('Vorname').addToPage(p, { x: 130, y: 704, width: 200, height: 14, font: f });
+  let b = await d.save();
+
+  const scan = async (bytes) => {
+    const doc = await ops.loadForEdit(bytes);
+    const g = formdetect.pageGraphics(doc.getPage(0));
+    const tc = await (await (await open(bytes)).getPage(1)).getTextContent();
+    const words = textutil.wordBoxes(tc).map((w) => ({ text: w.text, rect: w.rect, y: w.y, height: w.height }));
+    const { names, widgets } = await ops.listFieldWidgets(bytes);
+    const found = formdetect.detectFields({ words, lines: g.lines, circles: g.circles, page: { width: 595, height: 842 }, existing: widgets.filter((w) => w.page === 0).map((w) => w.rect), taken: new Set(names.map((n) => n.toLowerCase())) });
+    return { g, found };
+  };
+  const { g, found } = await scan(b);
+  assert.equal(g.circles.length, 2, `two circles (the filled dot does not count): ${JSON.stringify(g.circles)}`);
+  const by = (name) => found.filter((x) => x.name === name);
+  const list = found.map((x) => `${x.type}:${x.name}${x.value ? `=${x.value}` : ''}`);
+  // Text fields from a line and from underscores, name from the label to the left.
+  assert.equal(by('Name').length, 1, list.join(' | ')); assert.equal(by('Name')[0].type, 'text');
+  const nm = by('Name')[0].rect;
+  assert.ok(Math.abs(nm[0] - 130) < 1 && Math.abs(nm[2] - 330) < 1 && nm[1] > 728 && nm[3] <= 743, `field lies on the line: ${nm}`);
+  assert.equal(by('Telefon').length, 1, list.join(' | '));
+  const tel = by('Telefon')[0].rect;
+  assert.ok(tel[0] > 95 && tel[0] < 112 && tel[2] - tel[0] > 100, `field over the underscores: ${tel}`);
+  // The existing field "Vorname" is not suggested again.
+  assert.equal(found.filter((x) => /^Vorname/.test(x.name)).length, 0, list.join(' | '));
+  // Check boxes with a label to the right.
+  assert.deepEqual(found.filter((x) => x.type === 'checkbox').map((x) => x.name), ['Newsletter', 'Parkplatz']);
+  assert.ok(Math.abs(by('Newsletter')[0].rect[0] - 60) < 1.5 && Math.abs(by('Newsletter')[0].rect[3] - 630) < 1.5);
+  // Radio buttons: one group with the name of the question, values from the labels to the right.
+  const radios = found.filter((x) => x.type === 'radio');
+  assert.deepEqual(radios.map((x) => `${x.name}=${x.value}`), ['Verpflegung=Fleisch', 'Verpflegung=Vegetarisch'], list.join(' | '));
+  // Empty box: multiline text field, name from above.
+  assert.equal(by('Bemerkungen').length, 1, list.join(' | ')); assert.equal(by('Bemerkungen')[0].type, 'multiline');
+  // Table: four empty cells, names from the column header, unique.
+  const cellsFound = found.filter((x) => /^(Tag|Zeit)/.test(x.name));
+  assert.deepEqual(cellsFound.map((x) => x.name).sort(), ['Tag', 'Tag 2', 'Zeit', 'Zeit 2'], list.join(' | '));
+  assert.ok(cellsFound.every((x) => x.type === 'text' && x.rect[3] <= 400.5 && x.rect[1] >= 359.5));
+  // Signature line: signature field; "Ort, Datum" stays a text field.
+  assert.equal(by('Unterschrift').length, 1, list.join(' | ')); assert.equal(by('Unterschrift')[0].type, 'signature');
+  assert.ok(by('Unterschrift')[0].rect[3] - by('Unterschrift')[0].rect[1] >= 20, 'signature field is taller than a text field');
+  assert.equal(by('Ort, Datum').length, 1, list.join(' | ')); assert.equal(by('Ort, Datum')[0].type, 'text');
+  // No fields from the separator, underlined text, bullet point or the frame with text.
+  assert.equal(found.length, 13, `exactly the expected fields: ${list.join(' | ')}`);
+  assert.equal(new Set(found.filter((x) => x.type !== 'radio').map((x) => x.name.toLowerCase())).size, found.filter((x) => x.type !== 'radio').length, 'names are unique');
+
+  // Create in one step; afterwards the detection finds nothing new.
+  b = await ops.addFormFields(b, found.map((x) => ({ ...x, page: 0 })));
+  const fields = await ops.listFormFields(b);
+  assert.equal(fields.length, 13, `Vorname + 11 fields + one radio group: ${fields.map((x) => `${x.type}:${x.name}`).join(' | ')}`);
+  const check = await ops.loadForEdit(b);
+  assert.deepEqual(check.getForm().getRadioGroup('Verpflegung').getOptions(), ['Fleisch', 'Vegetarisch']);
+  assert.ok(check.getForm().getTextField('Bemerkungen').isMultiline());
+  assert.equal((await scan(b)).found.length, 0, 'existing fields are not created twice');
+  // PDF.js reads the new fields as form fields.
+  const an = await (await (await open(b)).getPage(1)).getAnnotations();
+  assert.equal(an.filter((a) => a.subtype === 'Widget').length, 14);
+
+  // Names: colon and underscores removed, dots replaced, length limited, unique.
+  assert.equal(formdetect.fieldName('Name, Vorname: ___'), 'Name, Vorname');
+  assert.equal(formdetect.fieldName('Nr. *'), 'Nr');
+  assert.equal(formdetect.fieldName('', 'Text field'), 'Text field');
+  assert.ok(formdetect.fieldName('Dies ist eine sehr lange Beschriftung, die viel zu lang für einen Feldnamen ist').length <= 40);
+  const takenNames = new Set(['datum']);
+  assert.equal(formdetect.uniqueName('Datum', takenNames), 'Datum 2'); assert.equal(formdetect.uniqueName('Datum', takenNames), 'Datum 3');
+
+  // Boxes as characters and a label inside the box.
+  const w = (text, x, y, width, height = 11) => ({ text, rect: [x, y - height * 0.22, x + width, y + height], y, height });
+  const glyph = formdetect.detectFields({ words: [w('☐', 60, 700, 9), w('Ja', 74, 700, 12), w('☐', 110, 700, 9), w('Nein', 124, 700, 24)], lines: [], page: { width: 595, height: 842 } });
+  assert.deepEqual(glyph.map((x) => `${x.type}:${x.name}`), ['checkbox:Ja', 'checkbox:Nein']);
+  const boxed = formdetect.detectFields({ words: [w('Firma:', 64, 706, 32)], lines: [{ x0: 60, y0: 700, x1: 360, y1: 700 }, { x0: 60, y0: 722, x1: 360, y1: 722 }, { x0: 60, y0: 700, x1: 60, y1: 722 }, { x0: 360, y0: 700, x1: 360, y1: 722 }], page: { width: 595, height: 842 } });
+  assert.equal(boxed.length, 1); assert.equal(boxed[0].name, 'Firma'); assert.ok(boxed[0].rect[0] > 96 && boxed[0].rect[2] < 360);
+
+  // Scanned form: lines from the image. A box and a writing line in a grayscale image.
+  const W = 400; const H = 200; const gimg = new Uint8Array(W * H).fill(255);
+  const hline = (x0, x1, y, t = 2) => { for (let yy = y; yy < y + t; yy++) for (let x = x0; x < x1; x++) gimg[yy * W + x] = 30; };
+  const vline = (x, y0, y1, t = 2) => { for (let xx = x; xx < x + t; xx++) for (let y = y0; y < y1; y++) gimg[y * W + xx] = 30; };
+  hline(40, 62, 40); hline(40, 62, 60); vline(40, 40, 62); vline(60, 40, 62);     // box 20 x 20
+  hline(120, 360, 150);                                                              // Schreiblinie
+  for (let y = 90; y < 130; y++) for (let x = 200; x < 300; x++) gimg[y * W + x] = 40;   // dark area: not a line
+  for (let x = 40; x < 48; x++) gimg[170 * W + x] = 30;                             // kurzer Strich eines Buchstabens
+  const rl = formdetect.rasterLines({ g: gimg, width: W, height: H }, { minLen: 10, maxThick: 5 });
+  const horiz = rl.filter((l) => l.y0 === l.y1); const vert = rl.filter((l) => l.x0 === l.x1);
+  assert.equal(horiz.length, 3, `three horizontal lines: ${JSON.stringify(horiz)}`);
+  assert.equal(vert.length, 2, `two vertical lines: ${JSON.stringify(vert)}`);
+  assert.ok(horiz.some((l) => l.x0 === 120 && l.x1 === 360 && Math.abs(l.y0 - 151) <= 1));
+  // Converted to points (2 pixels per point, y upwards) this gives a check box and a text field.
+  const toPt = (l) => ({ x0: l.x0 / 2, x1: l.x1 / 2, y0: (H - l.y1) / 2, y1: (H - l.y0) / 2 });
+  const fromScan = formdetect.detectFields({ words: [w('Kunde', 30, 26, 26)], lines: rl.map(toPt), page: { width: 200, height: 100 }, tol: 2.4, scan: true });
+  assert.deepEqual(fromScan.map((x) => `${x.type}:${x.name}`), ['checkbox:Check box', 'text:Kunde']);
+});
+
+test('Detect tables: lines with merged cells, without lines from the alignment, numbers and dates', async () => {
+  // Values for Excel: Swiss, German and English notation, currency, percent, date.
+  const v = (t) => tables.parseValue(t);
+  assert.deepEqual(v("1'250.00"), { value: 1250, type: 'number', numFmt: '#,##0.00' });
+  assert.deepEqual(v('1’250.50'), { value: 1250.5, type: 'number', numFmt: '#,##0.00' });
+  assert.deepEqual(v('CHF 1\'570.00'), { value: 1570, type: 'number', numFmt: '"CHF" #,##0.00' });
+  assert.deepEqual(v('320.00'), { value: 320, type: 'number', numFmt: '0.00' });
+  assert.deepEqual(v('12'), { value: 12, type: 'number' });
+  assert.equal(v('1 250,50').value, 1250.5); assert.equal(v('1.250,00').value, 1250); assert.equal(v('1,250.00').value, 1250);
+  assert.equal(v('3,5').value, 3.5); assert.equal(v('-12.50').value, -12.5); assert.equal(v('(12.50)').value, -12.5); assert.equal(v('12.50-').value, -12.5);
+  assert.equal(v('−45.00').value, -45); assert.equal(v('12.-').value, 12); assert.equal(v('12.50 EUR').numFmt, '#,##0.00 "EUR"');
+  assert.deepEqual(v('7.7%'), { value: 0.077, type: 'number', numFmt: '0.0%' }); assert.equal(v('8 %').value, 0.08);
+  const d = v('12.11.2026');
+  assert.equal(d.type, 'date'); assert.equal(d.numFmt, 'dd.mm.yyyy'); assert.equal(d.value.toISOString(), '2026-11-12T00:00:00.000Z');
+  assert.equal(v('2026-11-12').value.toISOString(), '2026-11-12T00:00:00.000Z'); assert.equal(v('3.4.26').value.toISOString(), '2026-04-03T00:00:00.000Z');
+  // Stays text: leading zero, phone, invalid date, numbers with a hyphen, long digit sequences, mixed text.
+  for (const t of ['0041', '007', '044 123 45 67', '31.02.2026', '2026-0815', '1234567890123456', 'Montage', 'Nr. 5', '8000 Zürich', '1.2.3', 'Europa', '']) assert.equal(v(t).type, 'text', t);
+
+  // Table with lines as a real PDF: header "Leistung" merged across two columns, "Region" across two rows.
+  const doc = await PDFDocument.create(); const f = await doc.embedFont(StandardFonts.Helvetica); const fb = await doc.embedFont(StandardFonts.HelveticaBold);
+  const p = doc.addPage([595, 842]); const black = rgb(0, 0, 0);
+  const line = (x0, y0, x1, y1) => p.drawLine({ start: { x: x0, y: y0 }, end: { x: x1, y: y1 }, thickness: 0.7, color: black });
+  const X = [60, 180, 300, 420]; const Y = [700, 680, 660, 640, 620];
+  for (const y of Y) line(y === 680 ? 180 : 60, y, 420, y);          // the line below "Leistung" is missing in the first column
+  line(60, 620, 60, 700); line(180, 620, 180, 700); line(420, 620, 420, 700);
+  line(300, 620, 300, 680);                                          // the column line is missing in the header row "Leistung"
+  const right = (t, x, y, font = f) => p.drawText(t, { x: x - font.widthOfTextAtSize(t, 10), y, size: 10, font });
+  p.drawText('Region', { x: 66, y: 686, size: 10, font: fb });
+  p.drawText('Leistung', { x: 280, y: 686, size: 10, font: fb });
+  p.drawText('Menge', { x: 186, y: 666, size: 10, font: fb }); p.drawText('Betrag', { x: 306, y: 666, size: 10, font: fb });
+  p.drawText('Nord', { x: 66, y: 646, size: 10, font: f }); right('12', 294, 646); right("1'250.00", 414, 646);
+  p.drawText('Süd', { x: 66, y: 626, size: 10, font: f }); right('3', 294, 626); right('320.00', 414, 626);
+  p.drawText('Überschrift ausserhalb der Tabelle', { x: 60, y: 740, size: 12, font: fb });
+  // Table without lines below it: three columns, numbers right-aligned, then running text.
+  const rowsB = [['Artikel', 'Datum', 'Preis'], ['Schraube M8', '12.11.2026', '4.50'], ['Dübel', '03.12.2026', '12.00'], ['Winkel verzinkt', '15.01.2027', '128.75']];
+  rowsB.forEach((r, k) => { p.drawText(r[0], { x: 60, y: 540 - k * 16, size: 10, font: k ? f : fb }); p.drawText(r[1], { x: 220, y: 540 - k * 16, size: 10, font: k ? f : fb }); right(r[2], 420, 540 - k * 16, k ? f : fb); });
+  p.drawText('Dieser Satz steht unter der Tabelle und läuft über die ganze Breite der Seite hinweg.', { x: 60, y: 470, size: 10, font: f });
+  p.drawText('Eine zweite Zeile Fliesstext folgt gleich darunter und gehört auch nicht zur Tabelle.', { x: 60, y: 456, size: 10, font: f });
+  const bytes = await doc.save();
+  const g = formdetect.pageGraphics((await ops.loadForEdit(bytes)).getPage(0));
+  const tc = await (await (await open(bytes)).getPage(1)).getTextContent();
+  const words = textutil.wordBoxes(tc).map((w) => ({ text: w.text, rect: w.rect, y: w.y, height: w.height }));
+  const found = tables.detectTables({ words, lines: g.lines });
+  assert.equal(found.length, 2, `two tables: ${JSON.stringify(found.map((t) => [t.ruled, t.rows, t.cols]))}`);
+  const [a, b] = found;
+  // Table with lines: 4 rows, 3 columns, merged cells.
+  assert.ok(a.ruled && a.rows === 4 && a.cols === 3, `grid: ${a.rows} x ${a.cols}`);
+  const at = (t, r, c) => t.cells.find((x) => x.r === r && x.c === c);
+  assert.deepEqual([at(a, 0, 0).text, at(a, 0, 0).rowSpan, at(a, 0, 0).colSpan], ['Region', 2, 1]);
+  assert.deepEqual([at(a, 0, 1).text, at(a, 0, 1).rowSpan, at(a, 0, 1).colSpan], ['Leistung', 1, 2]);
+  assert.equal(at(a, 1, 0), undefined, 'the cell below "Region" belongs to the merged cell');
+  assert.deepEqual([at(a, 1, 1).text, at(a, 1, 2).text], ['Menge', 'Betrag']);
+  assert.deepEqual([at(a, 2, 0).text, at(a, 2, 1).text, at(a, 2, 2).text], ['Nord', '12', "1'250.00"]);
+  assert.deepEqual([at(a, 3, 0).text, at(a, 3, 1).text, at(a, 3, 2).text], ['Süd', '3', '320.00']);
+  assert.equal(at(a, 2, 2).align, 'right'); assert.equal(at(a, 2, 1).align, 'right'); assert.equal(at(a, 2, 0).align, 'left');
+  assert.equal(at(a, 0, 1).align, 'center', 'header across two columns is centered');
+  assert.deepEqual(a.colX.map(Math.round), X); assert.deepEqual(a.rowY.map(Math.round), Y);
+  // Table without lines: 4 rows, 3 columns; the running text below does not belong to it.
+  assert.ok(!b.ruled && b.rows === 4 && b.cols === 3, `without lines: ${b.rows} x ${b.cols}`);
+  assert.deepEqual(b.cells.filter((c) => c.r === 3).map((c) => c.text), ['Winkel verzinkt', '15.01.2027', '128.75']);
+  assert.deepEqual(b.cells.filter((c) => c.r === 0).map((c) => c.text), ['Artikel', 'Datum', 'Preis']);
+  assert.deepEqual([at(b, 1, 0).align, at(b, 1, 1).align, at(b, 1, 2).align], ['left', 'left', 'right']);
+  assert.ok(b.rect[1] > 475, `table ends before the running text: ${b.rect}`);
+  // What is not in a table: heading and running text as whole lines.
+  const inT = (w) => found.some((t) => (w.rect[0] + w.rect[2]) / 2 > t.rect[0] && (w.rect[0] + w.rect[2]) / 2 < t.rect[2] && (w.rect[1] + w.rect[3]) / 2 > t.rect[1] && (w.rect[1] + w.rect[3]) / 2 < t.rect[3]);
+  const loose = tables.textRows(words.filter((w) => !inT(w)));
+  assert.deepEqual(loose.map((r) => r.segs.length), [1, 1, 1]);
+  assert.equal(loose[0].segs[0].text, 'Überschrift ausserhalb der Tabelle');
+
+  // Two text columns side by side (newspaper layout) are not a table.
+  const wd = (text, x, y) => ({ text, rect: [x, y - 2, x + text.length * 5, y + 10], y, height: 10 });
+  const cols2 = [];
+  for (let k = 0; k < 8; k++) { 'Dies ist ein langer Satz in der linken Spalte'.split(' ').reduce((x, t) => { cols2.push(wd(t, x, 700 - k * 13)); return x + t.length * 5 + 3; }, 60); 'und hier läuft der Text der rechten Spalte weiter'.split(' ').reduce((x, t) => { cols2.push(wd(t, x, 700 - k * 13)); return x + t.length * 5 + 3; }, 320); }
+  assert.equal(tables.detectTables({ words: cols2 }).length, 0, 'two text columns are not a table');
+  // A single line with a gap is not a table, two below each other are.
+  assert.equal(tables.detectTables({ words: [wd('Total', 60, 500), wd('1570.00', 400, 500)] }).length, 0);
+  const two = tables.detectTables({ words: [wd('Zwischensumme', 60, 500), wd('1450.00', 400, 500), wd('Total', 60, 486), wd('1570.00', 400, 486)] });
+  assert.equal(two.length, 1); assert.deepEqual(two[0].cells.map((c) => c.text), ['Zwischensumme', '1450.00', 'Total', '1570.00']);
+});
+
+test('Skewed scans: determine the angle, straighten the image, map points back, rotated recognized text', async () => {
+  // Page with "text lines": words as dark bars, some lines shorter (paragraph ends).
+  const W = 800; const H = 1000;
+  let seed = 7; const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+  const g = new Uint8Array(W * H).fill(255);
+  for (let line = 0; line < 24; line++) {
+    const y = 80 + line * 34; let x = 70; const end = line % 5 === 4 ? 400 : 720;
+    while (x < end) { const w = 14 + Math.floor(rnd() * 50); for (let yy = y; yy < y + 11; yy++) for (let xx = x; xx < Math.min(end, x + w); xx++) if (rnd() > 0.25) g[yy * W + xx] = 20; x += w + 9; }
+  }
+  const straight = { g, width: W, height: H };
+  const r0 = deskew.skewAngle(straight);
+  assert.ok(Math.abs(r0.angle) <= 0.1, `straight page: ${JSON.stringify(r0)}`);
+  assert.equal(deskew.usableSkew(r0), 0, 'a straight page is not rotated');
+  for (const a of [2.3, -4.1, 0.6, 7.5, -0.4]) {
+    const r = deskew.skewAngle(deskew.rotateGray(straight, a));
+    assert.ok(Math.abs(r.angle - a) <= 0.15, `angle ${a}: ${JSON.stringify(r)}`);
+    assert.ok(r.confidence >= deskew.MIN_CONFIDENCE, `angle ${a} is reliable: ${r.confidence}`);
+    assert.equal(deskew.usableSkew(r), r.angle);
+  }
+  // Straighten: afterwards the angle is zero.
+  const tilted = deskew.rotateGray(straight, 3.2);
+  const found = deskew.skewAngle(tilted).angle;
+  const fixed = deskew.rotateGray(tilted, -found);
+  assert.ok(Math.abs(deskew.skewAngle(fixed).angle) <= 0.15, 'straightened page');
+  // Mapping back: a dark pixel in the straightened image lies at the calculated position in the skewed image.
+  let hit = 0; let all = 0;
+  for (let y = 100; y < H - 100; y += 7) for (let x = 100; x < W - 100; x += 11) {
+    if (fixed.g[y * W + x] > 40) continue;
+    const [sx, sy] = deskew.rotatePoint(x, y, found, (W - 1) / 2, (H - 1) / 2);
+    all++; if (tilted.g[Math.round(sy) * W + Math.round(sx)] < 140) hit++;
+  }
+  assert.ok(all > 300 && hit >= all * 0.95, `points lie on the text again: ${hit}/${all}`);
+  assert.deepEqual(deskew.rotatePoint(10, 0, 90, 0, 0).map((v) => Math.round(v * 1000) / 1000), [0, 10]);
+  // No lines (noise, empty page): no reliable angle, nothing is rotated.
+  const noise = new Uint8Array(W * H).fill(255); for (let k = 0; k < W * H; k++) if (rnd() < 0.06) noise[k] = 10;
+  assert.equal(deskew.usableSkew(deskew.skewAngle({ g: noise, width: W, height: H })), 0, 'noise has no angle');
+  assert.deepEqual(deskew.skewAngle({ g: new Uint8Array(W * H).fill(255), width: W, height: H }), { angle: 0, confidence: 0 });
+  // Rotated more than the search range: uncertain, so do not rotate anything.
+  assert.equal(deskew.usableSkew(deskew.skewAngle(deskew.rotateGray(straight, 20))), 0, 'nothing is rotated outside the range');
+
+  // Recognized text of a skewed line is written rotated: PDF.js reads it as one line with this rotation.
+  const ang = (-2.5 * Math.PI) / 180;
+  const ws = ['Schiefe', 'Zeile', 'im', 'Scan']; let x = 100; let y = 600;
+  const words = ws.map((text, k) => { const w = { text, x, y, width: text.length * 6, height: 11, line: 0, par: 0, angle: ang }; x += (text.length * 6 + 4) * Math.cos(ang); y += (text.length * 6 + 4) * Math.sin(ang); return { ...w, k }; });
+  const b = await ops.addInvisibleText(await fixture(1), [{ page: 0, words, pars: [{ font: 'Arial', bold: false, tz: 100 }] }], readFont);
+  const all4 = (await (await (await open(b)).getPage(1)).getTextContent()).items.filter((i) => i.transform[5] < 610 && i.transform[5] > 580);
+  const joined = all4.map((i) => i.str + (i.hasEOL ? ' ' : '')).join('');
+  assert.match(joined.replace(/\s+/g, ' '), /Schiefe Zeile im Scan/, `words stay readable separately: ${JSON.stringify(all4.map((i) => [i.str, i.hasEOL, i.transform.map((v) => Math.round(v * 100) / 100)]))}`);
+  const items = all4.filter((i) => /Schiefe/.test(i.str));
+  assert.equal(items.length, 1);
+  assert.ok(Math.abs(Math.atan2(items[0].transform[1], items[0].transform[0]) - ang) < 0.003, `rotation in the text: ${items[0].transform}`);
+  // The content reader returns the area at the rotated position for each word (for removing it from the image).
+  const objs = content.interpret((await ops.loadForEdit(b)).getPage(0)).items.filter((o) => o.kind === 'text' && o.invisible);
+  assert.equal(objs.length, 4);
+  assert.ok(objs[3].bbox[1] < objs[0].bbox[1] - 3, `the last word lies lower than the first: ${objs[0].bbox} / ${objs[3].bbox}`);
 });
 
 let failed = 0;

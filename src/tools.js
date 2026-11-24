@@ -10,6 +10,7 @@ import * as conv from './convert.js';
 import { boundsOf } from './overlay.js';
 import * as scan from './scan.js';
 import { removeRecognizedText } from './pdf/content.js';
+import { usableSkew, MIN_SKEW } from './pdf/deskew.js';
 
 const STAMPS = [['APPROVED', [0.1, 0.55, 0.2]], ['NOT APPROVED', [0.8, 0.1, 0.1]], ['DRAFT', [0.176, 0.482, 0.784]], ['FINAL', [0.1, 0.55, 0.2]], ['CONFIDENTIAL', [0.8, 0.1, 0.1]], ['FOR INFORMATION', [0.176, 0.482, 0.784]], ['COMPLETED', [0.1, 0.55, 0.2]], ['RECEIVED', [0.45, 0.45, 0.47]], ['COPY', [0.45, 0.45, 0.47]], ['REJECTED', [0.8, 0.1, 0.1]]];
 const IMG_FILTER = [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp'] }];
@@ -65,7 +66,7 @@ export class Tools {
         T('digital-sign', 'Sign digitally', 'cert'), R('Sign digitally (invisible)...', 'cert', () => this.digitalSign(null)), R('Create digital ID...', 'plus', () => this.createId(), false), R('Validate all signatures', 'preflight', () => this.app.panels.show('signatures')),
       ] },
       { id: 'form', label: 'Prepare form', icon: 'form', desc: 'Create fields, manage data', extra: () => this.formFieldsList(), items: [
-        { sub: 'Fields' }, T('form-text', 'Text box', 'textbox'), T('form-multiline', 'Multiline text field', 'textbox'), T('form-checkbox', 'Check box', 'chk'), T('form-radio', 'Radio button', 'radio'), T('form-dropdown', 'Dropdown', 'dd'), T('form-list', 'List box', 'list'), T('form-button', 'Button', 'btn'), T('form-signature', 'Signature field', 'cert'),
+        { sub: 'Fields' }, R('Detect fields automatically...', 'search', () => this.app.fieldDetect.start()), T('form-text', 'Text box', 'textbox'), T('form-multiline', 'Multiline text field', 'textbox'), T('form-checkbox', 'Check box', 'chk'), T('form-radio', 'Radio button', 'radio'), T('form-dropdown', 'Dropdown', 'dd'), T('form-list', 'List box', 'list'), T('form-button', 'Button', 'btn'), T('form-signature', 'Signature field', 'cert'),
         { sub: 'Form data' }, R('Highlight form fields', 'highlight', () => this.toggleFormHighlight()), R('Export data (JSON)...', 'share', () => this.exportForm()), R('Import data (JSON)...', 'open', () => this.importForm()), R('Reset form...', 'undo', () => this.resetForm()), R('Flatten form...', 'compress', () => this.flattenForm()),
       ] },
       { id: 'protect', label: 'Protect', icon: 'lock', desc: 'Passwords and permissions', items: [
@@ -74,7 +75,7 @@ export class Tools {
       { id: 'redact', label: 'Redact', icon: 'redact', desc: 'Permanently remove content', extra: () => h('div', { class: 'lp-note' }, 'Marks stay editable until you choose "Apply redactions". After that, the content is permanently removed from the document.'), items: [
         T('redact-text', 'Mark up text', 'text'), T('redact-area', 'Mark area', 'rect'), R('Mark pages...', 'pages', () => this.redactPages()), R('Find and mark...', 'search', () => this.searchRedact()), R('Apply redactions', 'check', () => this.applyRedactions()),
       ] },
-      { id: 'ocr', label: 'Scan & OCR', icon: 'scan', desc: 'Recognize text in scans', items: [R('Recognize text...', 'scan', () => this.ocr()), R('Create from scanner...', 'scan', () => this.createFromScanner(), false)] },
+      { id: 'ocr', label: 'Scan & OCR', icon: 'scan', desc: 'Recognize text in scans', items: [R('Recognize text...', 'scan', () => this.ocr()), R('Straighten page...', 'rotR', () => this.deskew()), R('Create from scanner...', 'scan', () => this.createFromScanner(), false)] },
       { id: 'compress', label: 'Compress PDF', icon: 'compress', desc: 'Reduce file size', direct: this.guard(() => this.compress()) },
       { id: 'measure', label: 'Measure', icon: 'measure', desc: 'Distance, perimeter, area', items: [T('measure-dist', 'Distance', 'line'), T('measure-perimeter', 'Perimeter', 'polyline'), T('measure-area', 'Area', 'poly'), R('Set scale...', 'ruler', () => this.scaleDialog())] },
       { id: 'compare', label: 'Compare files', icon: 'compare', desc: 'Differences between two PDFs', direct: this.guard(() => this.compare()) },
@@ -751,25 +752,114 @@ export class Tools {
     const doc = this.doc;
     const lang = o.lang || this.app.settings.ocrLang || 'deu+eng';
     // Recognize again: remove the previous recognition first (one "Undo" step together with the new one).
-    let cleared = false;
+    // pre: steps before recognition that should be one step together with it.
+    let pre = 0;
     if (o.redo) {
       const r = await removeRecognizedText(doc.bytes, pages);
-      if (r.count) { cleared = await doc.mutate(() => r.bytes, { skipCheck: !!o.skipCheck }); if (cleared) this.app.editor.invalidate(); }
+      if (r.count && await doc.mutate(() => r.bytes, { skipCheck: !!o.skipCheck })) { pre++; this.app.editor.invalidate(); }
+    }
+    // Preference: rotate skewed scans straight themselves before reading. Straight pages and pages with normal
+    // text stay unchanged.
+    if (this.app.settings.ocrDeskew && !o.noDeskew) {
+      const skewed = await busy('Looking for skewed pages', () => scan.skewedScans(this.app, pages));
+      if (this.doc !== doc) return 0;
+      if (skewed.length && await this.straighten(skewed, { skipCheck: !!o.skipCheck, noOcr: true })) pre++;
     }
     const found = await busy('Recognizing text', (progress) => scan.recognize(this.app, pages, { lang, dpi: o.dpi || 'auto', progress }));
     if (this.doc !== doc) return 0;
     doc.ocrOffered = true;
     if (!found.length) {
-      if (cleared) await doc.undo();
+      for (let k = 0; k < pre; k++) await doc.undo();
       if (!o.quiet) toast('No new text was recognized.'); this.app.renderBanner(); return 0;
     }
     const ok = await doc.mutate((b) => ops.addInvisibleText(b, found, readFont), { skipCheck: !!o.skipCheck });
     if (!ok) return 0;
-    if (cleared) doc.undoStack.splice(-1, 1);
+    if (pre) doc.undoStack.splice(-pre, pre);
     this.app.editor.invalidate();
     this.app.renderBanner();
     if (!o.silent) toast(`Text recognized on ${found.length} page(s). It is now searchable and can be changed under "Edit PDF".`, 'ok');
+    // Note about clearly skewed pages: they were read straightened, the image itself is still skewed.
+    const tilted = found.filter((x) => Math.abs(x.skew || 0) >= 1);
+    if (tilted.length && !o.silent) toast(`${tilted.length === 1 ? 'Page' : 'Pages'} ${tilted.map((x) => doc.label(x.page)).join(', ')} ${tilted.length === 1 ? 'was' : 'were'} scanned at an angle. The text was read anyway and lies over the image. "Straighten page" under "Scan & OCR" rotates the image straight.`);
     return found.length;
+  }
+
+  // --- Schiefe Scans begradigen -------------------------------------------------------------
+  /**
+   * Rotates the image of scanned pages straight. list: [{ page, angle }] (angle: skew in degrees, positive
+   * clockwise). Pages that had recognized text are read again afterwards; everything together is one step
+   * for "Undo". Returns the number of straightened pages.
+   */
+  async straighten(list, o = {}) {
+    const doc = this.doc;
+    if (!list.length) return 0;
+    const edit = await loadForEdit(doc.bytes);
+    const jobs = [];
+    await busy('Straightening pages', async (progress) => {
+      for (let k = 0; k < list.length; k++) {
+        const { page, angle } = list[k];
+        progress(k / list.length, `Page ${doc.label(page)} (${k + 1} of ${list.length})`);
+        const info = await scan.pageInfo(doc, page, edit);
+        // Resolution of the new image: like the previous one, between 150 and 300 dpi.
+        const dpi = Math.round(Math.min(300, Math.max(150, info.dpi || 200)));
+        jobs.push({ page, jpeg: await scan.straightenedPage(this.app, page, angle, dpi), hadText: info.hasText });
+      }
+    });
+    if (this.doc !== doc) return 0;
+    const ok = await doc.mutate((b) => ops.setPageImages(b, jobs), { pages: jobs.map((j) => j.page), skipCheck: !!o.skipCheck });
+    if (!ok) return 0;
+    this.app.editor.invalidate();
+    // The previously recognized text matched the skewed image and was removed with it: read again.
+    const again = jobs.filter((j) => j.hadText).map((j) => j.page);
+    if (again.length && !o.noOcr) { const n = await this.recognizeText(again, { skipCheck: true, quiet: true, silent: true, noDeskew: true }); if (n) doc.undoStack.splice(-1, 1); }
+    return jobs.length;
+  }
+
+  /** Command "Straighten page": detected angle with preview, can be corrected by hand. */
+  async deskew() {
+    const doc = this.doc;
+    if (!(await doc.allowEdit())) return;
+    const cur = this.viewer.current;
+    const scanPages = async (pages) => { const edit = await loadForEdit(doc.bytes); const out = []; for (const p of pages) if (scan.isScanPage(await scan.pageInfo(doc, p, edit))) out.push(p); return out; };
+    if (!(await scanPages([cur])).length) {
+      await messageBox('Straighten page', `Page ${doc.label(cur)} is not a scan: it contains normal text or no page-filling image and stays unchanged.\n\nOnly the image of a scanned or photographed page can be straightened.`);
+      return;
+    }
+    const measured = await busy('Determining angle', () => scan.pageSkew(this.app, cur));
+    const auto = usableSkew(measured);
+    const { canvas: base } = await this.viewer.renderToCanvas(cur, 50, { noAnnots: true });
+    const view = h('canvas', { class: 'deskew-view', width: base.width, height: base.height });
+    const angleIn = h('input', { type: 'number', step: '0.1', min: '-15', max: '15', value: auto.toFixed(1), data: { field: 'angle' }, 'aria-label': 'Skew in degrees' });
+    const draw = () => {
+      const a = parseFloat(angleIn.value) || 0; const c = view.getContext('2d');
+      c.setTransform(1, 0, 0, 1, 0, 0); c.fillStyle = '#fff'; c.fillRect(0, 0, view.width, view.height);
+      c.translate(view.width / 2, view.height / 2); c.rotate((-a * Math.PI) / 180); c.drawImage(base, -base.width / 2, -base.height / 2);
+      c.setTransform(1, 0, 0, 1, 0, 0);
+      // Guide lines: they show whether the lines are horizontal.
+      c.strokeStyle = 'rgba(14,124,134,.4)'; c.lineWidth = 1;
+      for (let y = 30; y < view.height; y += 30) { c.beginPath(); c.moveTo(0, y + 0.5); c.lineTo(view.width, y + 0.5); c.stroke(); }
+    };
+    angleIn.addEventListener('input', draw);
+    const note = auto ? `Detected skew: ${auto.toFixed(1)} degrees.` : Math.abs(measured.angle) < MIN_SKEW && measured.confidence > 0 ? 'The page is already straight. You can still enter an angle by hand.' : 'The skew could not be determined reliably (e.g. a photo without text lines). Please set the angle by hand.';
+    const node = h('div', { class: 'deskew' }, view,
+      h('div', { class: 'deskew-row' }, h('label', {}, h('span', {}, 'Skew in degrees (positive: rotated clockwise)'), angleIn), h('button', { class: 'btn', type: 'button', data: { act: 'auto' }, onclick: () => { angleIn.value = auto.toFixed(1); draw(); } }, 'Automatic')),
+      h('div', { class: 'lp-note', data: { note: '1' } }, `${note} The preview shows the page after rotating.`));
+    draw();
+    const r = await formDialog('Straighten page', [
+      { type: 'node', node }, { ...this.range('Pages'), value: String(cur + 1) },
+      { type: 'info', label: `The angle above applies to page ${doc.label(cur)}. Other selected pages are straightened with their own automatically detected angle. Pages that are not scans and pages that are already straight stay unchanged. The image of the page is recalculated; recognized text is read again afterwards.` },
+    ], { ok: 'Straighten', wide: true, validate: (v) => this.validateRange(v) || (!Number.isFinite(parseFloat(angleIn.value)) || Math.abs(parseFloat(angleIn.value)) > 15 ? 'Please enter an angle between -15 and 15 degrees.' : null) });
+    base.width = 0;
+    if (!r) return;
+    const pages = this.pagesOf(r); const manual = parseFloat(angleIn.value) || 0;
+    const list = [];
+    if (pages.includes(cur) && Math.abs(manual) >= 0.05) list.push({ page: cur, angle: manual });
+    const others = pages.filter((p) => p !== cur);
+    if (others.length) list.push(...await busy('Looking for skewed pages', () => scan.skewedScans(this.app, others)));
+    list.sort((p, q) => p.page - q.page);
+    if (!list.length) { toast('The selected pages are already straight or are not scans. Nothing was changed.'); return; }
+    const n = await this.straighten(list, { skipCheck: true });
+    if (n) toast(`${n === 1 ? 'Page' : `${n} pages`} straightened${pages.length > n ? `, ${pages.length - n} unchanged (straight or not a scan)` : ''}. With "Undo" (Ctrl+Z) you can take this back.`, 'ok');
   }
 
   // --- Exporte ----------------------------------------------------------------------------
