@@ -89,7 +89,16 @@
           ]
         }
       ],
-      "icon": "assets/icon.ico"
+      "icon": "assets/icon.ico",
+      "fileAssociations": [
+        {
+          "ext": "pdf",
+          "name": "DocPilot.PDF",
+          "description": "PDF document",
+          "icon": "assets/icon.ico",
+          "role": "Editor"
+        }
+      ]
     },
     "nsis": {
       "oneClick": false,
@@ -141,20 +150,18 @@
           "from": "build/mac/docpilot-scan",
           "to": "docpilot-scan"
         }
+      ],
+      "fileAssociations": [
+        {
+          "ext": "pdf",
+          "name": "PDF document",
+          "role": "Editor"
+        }
       ]
     },
     "dmg": {
       "artifactName": "DocPilot-mac-${arch}.${ext}",
       "title": "DocPilot"
-    },
-    "fileAssociations": [
-      {
-        "ext": "pdf",
-        "name": "DocPilot.PDF",
-        "description": "PDF document",
-        "icon": "assets/icon.ico",
-        "role": "Editor"
-      }
-    ]
+    }
   }
 }

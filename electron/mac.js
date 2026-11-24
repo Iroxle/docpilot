@@ -186,4 +186,13 @@ async function scan(out) {
   return fs.existsSync(out);
 }
 
-module.exports = { policy, FONT_DIRS, fontFile, NORMAL_DOTM, SRGB_ICC, officeAvailable, officeToPdf, scan };
+// --- Opening folders -----------------------------------------------------------------------
+
+/**
+ * On a Mac, apps and other bundles are folders too (e.g. Calculator.app). DocPilot only opens real folders,
+ * so bundles are refused: opening one would start a program.
+ */
+const BUNDLE = /\.(app|bundle|framework|plugin|kext|prefPane|appex|xpc|pkg|mpkg|workflow|action|saver|qlgenerator|mdimporter)\/?$/i;
+const isBundle = (p) => BUNDLE.test(p) || fs.existsSync(path.join(p, 'Contents', 'Info.plist'));
+
+module.exports = { policy, FONT_DIRS, fontFile, NORMAL_DOTM, SRGB_ICC, officeAvailable, officeToPdf, scan, isBundle };

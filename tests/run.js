@@ -852,7 +852,7 @@ async function makeFixture(name, pages = 4) {
     };
     assert.equal(await page.evaluate(() => window.__app.settings.appearance), 'light', 'default stays Light');
     await run('preferences'); await page.waitForSelector('.dlg.pref [data-pref="appearance"]');
-    assert.deepEqual(await page.$$eval('.dlg.pref [data-pref="appearance"] option', (o) => o.map((x) => x.textContent)), ['Light', 'Dark', 'Same as Windows']);
+    assert.deepEqual(await page.$$eval('.dlg.pref [data-pref="appearance"] option', (o) => o.map((x) => x.textContent)), ['Light', 'Dark', process.platform === 'darwin' ? 'Same as macOS' : 'Same as Windows']);
     await page.click('.dlg.pref .btn:not(.primary)'); await wait(100);
 
     // Dark: takes effect immediately, without a restart.
@@ -991,7 +991,9 @@ async function makeFixture(name, pages = 4) {
     // The open function does not start files or programs.
     const msg = await page.evaluate((p) => window.dp.openPath(p), file('a.pdf'));
     assert.match(String(msg), /Only folders/, `file is not opened: ${msg}`);
-    assert.match(String(await page.evaluate(() => window.dp.openPath('C:\\Windows\\System32\\calc.exe'))), /Only folders/, 'program is not started');
+    // A program is not started either (on a Mac, an app is a folder: Calculator.app).
+    const prog = process.platform === 'win32' ? 'C:\\Windows\\System32\\calc.exe' : process.platform === 'darwin' ? '/System/Applications/Calculator.app' : '/usr/bin/env';
+    assert.match(String(await page.evaluate((x) => window.dp.openPath(x), prog)), /Only folders/, 'program is not started');
     // HTML conversion loads nothing from the network and runs no JavaScript.
     const http = require('http');
     let hits = 0;

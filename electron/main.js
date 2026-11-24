@@ -163,7 +163,17 @@ const toBuf = (b) => Buffer.from(b.buffer ? new Uint8Array(b.buffer, b.byteOffse
 ipcMain.handle('dp:ready', () => { rendererReady = true; const p = pendingPaths.splice(0); return p; });
 ipcMain.handle('dp:close-ok', () => { allowClose = true; if (win) win.close(); });
 ipcMain.handle('dp:set-title', (_e, t) => { if (win) win.setTitle(t ? `${t} - ${APP_NAME}` : APP_NAME); });
-ipcMain.handle('dp:fullscreen', (_e, on) => { if (win) win.setFullScreen(on === undefined ? !win.isFullScreen() : !!on); return win ? win.isFullScreen() : false; });
+// On a Mac, full screen is an animated transition: isFullScreen() only changes once it has finished.
+// Until then, the state requested last counts.
+let fullScreenWanted = null;
+ipcMain.handle('dp:fullscreen', (_e, on) => {
+  if (!win) return false;
+  const now = mac && fullScreenWanted !== null ? fullScreenWanted : win.isFullScreen();
+  const target = on === undefined ? !now : !!on;
+  if (mac) { fullScreenWanted = target; win.once(target ? 'enter-full-screen' : 'leave-full-screen', () => { fullScreenWanted = null; }); }
+  win.setFullScreen(target);
+  return mac ? target : win.isFullScreen();
+});
 ipcMain.handle('dp:version', () => app.getVersion());
 ipcMain.handle('dp:policy', () => POLICY);
 
@@ -227,7 +237,7 @@ ipcMain.handle('dp:open-external', async (_e, url) => {
 });
 // Only open folders (e.g. the destination of an export). Files or programs are never started this way.
 ipcMain.handle('dp:open-path', async (_e, p) => {
-  try { if (!(await fs.promises.stat(p)).isDirectory()) return 'Only folders can be opened.'; }
+  try { if (!(await fs.promises.stat(p)).isDirectory() || (mac && mac.isBundle(p))) return 'Only folders can be opened.'; }
   catch { return 'The folder was not found.'; }
   return shell.openPath(p);
 });
