@@ -5,7 +5,11 @@ node_modules/
 # Generated files
 dist/
 release/
+build/
 
 # Windows
 Thumbs.db
 desktop.ini
+
+# macOS
+.DS_Store

@@ -107,7 +107,7 @@ export class Overlay {
     })) || null;
   }
 
-  // --- Darstellung ---------------------------------------------------------------------
+  // --- Rendering ---------------------------------------------------------------------
   renderPage(i) {
     const n = this.viewer.node(i);
     if (!n?.layers) { this.ensureToolLayer(i); return; }
@@ -357,7 +357,7 @@ export class Overlay {
     ta.focus();
   }
 
-  // --- Werkzeuge -------------------------------------------------------------------------
+  // --- Tools -------------------------------------------------------------------------
   toolDown(e, i) {
     if (e.button !== 0) return;
     const t = this.tool;
@@ -619,7 +619,7 @@ export class Overlay {
   }
   hideMini() { this.mini?.remove(); this.mini = null; }
 
-  // --- Eigenschaftenleiste ---------------------------------------------------------------
+  // --- Properties bar ---------------------------------------------------------------
   renderPropbar() {
     const bar = $('#propbar');
     const a = this.selected ? this.doc?.find(this.selected) : null;

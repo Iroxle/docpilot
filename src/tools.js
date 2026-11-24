@@ -85,7 +85,7 @@ export class Tools {
     ];
   }
 
-  // --- Linke Leiste -----------------------------------------------------------------------
+  // --- Left pane -----------------------------------------------------------------------
   renderAll() {
     this.left.replaceChildren(h('div', { class: 'lp-head' }, h('span', { class: 't' }, 'All tools'), ibtn('chevL', 'Hide', () => this.app.run('toggle-left'))),
       h('div', { class: 'lp-body' }, this.groups.filter((g) => !g.hidden).map((g) => h('button', { class: 'lp-item', type: 'button', data: { group: g.id }, onclick: () => this.openGroup(g.id) }, icon(g.icon), g.label))));
@@ -360,7 +360,7 @@ export class Tools {
     await this.app.openBytes(out, 'Combined.pdf', { unsaved: true });
   }
 
-  // --- Kommentare -------------------------------------------------------------------------
+  // --- Comments -------------------------------------------------------------------------
   stampGrid() {
     return h('div', { class: 'stamp-grid' }, STAMPS.map(([text, color]) => h('button', { class: 'stamp-btn', type: 'button', style: { color: cssColor(color), borderColor: cssColor(color) }, data: { stamp: text }, onclick: async () => {
       const r = await formDialog('Stamp', [{ k: 'dyn', label: 'Add name and date', type: 'checkbox', value: true }], { ok: 'Place' });
@@ -521,7 +521,7 @@ export class Tools {
     this.selectTool('place-stamp');
   }
 
-  // --- Zertifikate ------------------------------------------------------------------------
+  // --- Certificates ------------------------------------------------------------------------
   async createId() {
     const r = await formDialog('Create digital ID', [
       { type: 'info', label: 'The ID is self-signed. Recipients see it as "identity unverified" until they mark your certificate as trusted.' },
@@ -558,7 +558,7 @@ export class Tools {
     toast('Document signed', 'ok');
   }
 
-  // --- Formulare --------------------------------------------------------------------------
+  // --- Forms --------------------------------------------------------------------------
   async addField(type, i, rect, p0) {
     const defaultSize = { checkbox: [14, 14], radio: [14, 14], text: [200, 22], multiline: [240, 80], dropdown: [180, 22], list: [180, 70], button: [110, 26], signature: [220, 50] }[type];
     const box = rect || [p0[0], p0[1] - defaultSize[1], p0[0] + defaultSize[0], p0[1]];
@@ -604,7 +604,7 @@ export class Tools {
   async resetForm() { const c = await messageBox('Reset form', 'Clear all entered values?', ['Reset', 'Cancel'], { primary: 1 }); if (c === 0) await this.mutate((b) => ops.resetForm(b)); }
   async flattenForm() { const c = await messageBox('Flatten form', 'The fields are drawn permanently into the pages and can no longer be filled in afterwards.', ['Flatten', 'Cancel'], { primary: 1 }); if (c === 0) { await this.mutate((b) => ops.flattenForms(b)); if (this.group?.id === 'form') this.renderGroup(); } }
 
-  // --- Schutz -----------------------------------------------------------------------------
+  // --- Protection -----------------------------------------------------------------------------
   async encryptDialog() {
     const r = await formDialog('Password protection', [
       { k: 'user', label: 'Password to open', type: 'password' }, { k: 'user2', label: 'Redo', type: 'password' },
@@ -784,7 +784,7 @@ export class Tools {
     return found.length;
   }
 
-  // --- Schiefe Scans begradigen -------------------------------------------------------------
+  // --- Straighten skewed scans -------------------------------------------------------------
   /**
    * Rotates the image of scanned pages straight. list: [{ page, angle }] (angle: skew in degrees, positive
    * clockwise). Pages that had recognized text are read again afterwards; everything together is one step
@@ -862,7 +862,7 @@ export class Tools {
     if (n) toast(`${n === 1 ? 'Page' : `${n} pages`} straightened${pages.length > n ? `, ${pages.length - n} unchanged (straight or not a scan)` : ''}. With "Undo" (Ctrl+Z) you can take this back.`, 'ok');
   }
 
-  // --- Exporte ----------------------------------------------------------------------------
+  // --- Exports ----------------------------------------------------------------------------
   async exportAs(fmt) {
     const doc = this.doc;
     if (!doc) { toast('Please open a document first.'); return; }
@@ -902,7 +902,7 @@ export class Tools {
     toast('PDF/A saved', 'ok');
   }
 
-  // --- PDF erstellen ----------------------------------------------------------------------
+  // --- Create PDF ----------------------------------------------------------------------
   async createFromFile() {
     const paths = await window.dp.openDialog({ title: 'Create PDF from file', multi: true, filters: conv.CREATE_FILTERS });
     for (const p of paths) {
@@ -970,7 +970,7 @@ export class Tools {
     if (r) await this.app.openBytes(await ops.blankPdf(parseSize(r.size), r.n), 'New document.pdf', { unsaved: true });
   }
 
-  // --- Komprimieren -----------------------------------------------------------------------
+  // --- Compress -----------------------------------------------------------------------
   async compress() {
     const doc = this.doc;
     if (!doc) { toast('Please open a document first.'); return; }
@@ -995,7 +995,7 @@ export class Tools {
     if (ok) await messageBox('PDF compressed', `Before: ${fmtSize(before)}\nAfter: ${fmtSize(doc.bytes.length)}\nRecompressed images: ${images}\n\nPlease save to keep the result.`);
   }
 
-  // --- Messen -----------------------------------------------------------------------------
+  // --- Measure -----------------------------------------------------------------------------
   async scaleDialog() {
     const r = await formDialog('Set scale', [{ type: 'info', label: 'Example: 1 mm on the page equals 100 mm in reality.' }, { k: 'ratio', label: 'Factor', type: 'number', value: this.measure.ratio, min: 0.0001, step: 'any' }, { k: 'unit', label: 'Unit', type: 'select', options: ['mm', 'cm', 'm', 'in', 'pt'], value: this.measure.unit }]);
     if (r) { this.measure = r; toast('Scale set', 'ok'); }
@@ -1023,7 +1023,7 @@ export class Tools {
     await this.label(page, pts[pts.length - 1], contents);
   }
 
-  // --- Vergleichen ------------------------------------------------------------------------
+  // --- Compare ------------------------------------------------------------------------
   async compare() {
     const doc = this.doc;
     if (!doc) { toast('Please open the new version first.'); return; }
@@ -1068,7 +1068,7 @@ export class Tools {
     await messageBox('Comparison complete', `Added words: ${res.added}\nRemoved words: ${res.removed}\nPages old/new: ${res.pagesA}/${res.pagesB}\n\nNew text is highlighted in green. Red notes show removed text.`);
   }
 
-  // --- Berichte ---------------------------------------------------------------------------
+  // --- Reports ---------------------------------------------------------------------------
   report(title, rows) {
     const label = { ok: 'Passed', bad: 'Failed', warn: 'Note' };
     return messageBox(title, h('table', { class: 'tbl' }, rows.map(([s, a, b]) => h('tr', {}, h('td', {}, h('span', { class: `badge ${s}` }, label[s])), h('td', {}, a), h('td', {}, b || '')))), ['Close'], { wide: true });

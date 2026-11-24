@@ -1,5 +1,5 @@
 'use strict';
-// Creates the app icons (icon.ico, icon.png) from assets/emblem.svg. Usage: npm run icons
+// Creates the app icons (icon.ico, icon.png, icon-mac.png) from assets/emblem.svg. Usage: npm run icons
 const { app, BrowserWindow } = require('electron');
 const fs = require('fs');
 const path = require('path');
@@ -51,6 +51,11 @@ app.whenReady().then(async () => {
       x.imageSmoothingQuality='high'; x.drawImage(img,0,0,s,s);
       out[s]={png:c.toDataURL('image/png').split(',')[1], rgba:Array.from(x.getImageData(0,0,s,s).data)};
     }
+    // macOS: 1024 px with the margin and shadow of the Mac icon grid (icon body 824 px).
+    const c=document.createElement('canvas'); c.width=c.height=1024; const x=c.getContext('2d');
+    const s=824*512/480; x.shadowColor='rgba(0,0,0,0.28)'; x.shadowBlur=28; x.shadowOffsetY=12;
+    x.imageSmoothingQuality='high'; x.drawImage(img,(1024-s)/2,(1024-s)/2,s,s);
+    out.mac={png:c.toDataURL('image/png').split(',')[1]};
     return out;})()`);
   const images = SIZES.map((size) => {
     const png = Buffer.from(result[size].png, 'base64');
@@ -58,6 +63,7 @@ app.whenReady().then(async () => {
   });
   fs.writeFileSync(path.join(assets, 'icon.ico'), ico(images));
   fs.writeFileSync(path.join(assets, 'icon.png'), Buffer.from(result[512].png, 'base64'));
+  fs.writeFileSync(path.join(assets, 'icon-mac.png'), Buffer.from(result.mac.png, 'base64'));
   console.log('Icons created');
   app.quit();
 });

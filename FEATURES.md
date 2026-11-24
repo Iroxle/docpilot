@@ -56,6 +56,22 @@ The interface consists of a menu bar, tabs, a tools pane on the left, quick tool
 | Third-party stamps | Are displayed but cannot be moved. Stamps are not part of the XFDF exchange. |
 | Office to PDF | Best quality with Office installed. Without Office, only simple conversion of .docx, .xlsx, .csv. |
 
+## Mac
+
+DocPilot for Mac (macOS 12 or later, Apple silicon and Intel) has the same features as on Windows. The differences:
+
+| Area | On a Mac |
+|---|---|
+| Keyboard | Shortcuts use ⌘ instead of Ctrl, and the interface shows them that way. macOS keeps ⌘H (hide), ⌘Tab (switch apps) and F11 for itself: reading mode is ⌃⌘H, the next and previous tab are ⌃Tab and ⌃⇧Tab, the full-screen window is ⌃⌘F. Redo also works with ⇧⌘Z. Preferences open with ⌘, as well as ⌘K. |
+| Menu | The DocPilot menu holds About, Preferences, Hide and Quit, as in other Mac apps. |
+| Fonts | System fonts, fonts for all users and for the current user, and the fonts that come with Microsoft Office (e.g. Calibri). Office cloud fonts and the default font from Word's Normal template are not read, because macOS would ask for access to Office's data on every start; new text starts in Aptos 11 if installed, otherwise Calibri 11 or Arial. |
+| Office to PDF | With Microsoft Office for Mac (Word, Excel, PowerPoint), if installed. The first time, macOS asks whether DocPilot may control the Office app and access its data. While macros are blocked, file types that can contain macros (.doc, .xls, .ppt, .docm, .xlsm, .pptm and similar) are not opened in Office. Excel for Mac can split a workbook whose sheets have different page setups into several PDFs; DocPilot then uses the first one. Without Office: the same simple conversion as on Windows. |
+| Scanner | "PDF from scanner" opens the macOS scanner window (as in the Image Capture app); choose the scanner on the left and click "Scan". |
+| Paste screenshots | ⌘V pastes a screenshot taken to the clipboard with ⌃⇧⌘4. |
+| Appearance | "Same as macOS" follows System Settings > Appearance. |
+| JavaScript and macros | Blocked, as on Windows. |
+| First start | The app is signed, but not yet notarized by Apple: macOS asks once before the first start (see the README). |
+
 ## Not included
 
 XFA forms, automated actions and batch processing, indexing, portfolios, rich media/3D, color conversion and trapping, cloud services (share, request signature).
@@ -64,6 +80,7 @@ XFA forms, automated actions and batch processing, indexing, portfolios, rich me
 
 - Installing the MSI on a machine (requires administrator rights). The MSI contents and the unpacked program were checked.
 - Printing on a physical printer and scanning with a real scanner.
+- On a Mac: Office conversion with Microsoft Office for Mac and the scanner window. The Mac version is built, started and tested automatically on macOS, without Office and without a scanner.
 - Viewing the generated files in other PDF programs. Checks were done with PDF.js and the built-in signature validation.
 - Documents from your daily work. Testing used generated test documents.
 

@@ -1,23 +1,30 @@
-# Builds the Windows installers and publishes them as a GitHub release.
+# Builds DocPilot for Windows and macOS, runs the tests and publishes a GitHub release.
 #
 # Release a new version:
 #   1. Set the version in package.json and add a section for it to CHANGELOG.md.
 #   2. Push to main.
-# If there is no release for the version in package.json yet, this workflow builds the installers
-# and publishes the release "v<version>". The release text is the CHANGELOG.md section of that version.
-# Pushes that do not change the version only run the short check job.
+# If there is no release for the version in package.json yet, this workflow runs the tests, builds the
+# Windows installers and the Mac disk images and publishes the release "v<version>". The release text is
+# the CHANGELOG.md section of that version. Pushes to main that do not change the version do nothing.
 #
-# "Run workflow" on the Actions page builds the installers on demand. They can be downloaded from
-# the workflow run as an artifact; tick "publish" to publish them as a release as well.
+# Pushes to other branches and pull requests run the tests and build everything without publishing
+# (the builds are made even if tests fail, to see both). The builds can be downloaded from the workflow
+# run as artifacts. A release is only published when all tests pass.
+# "Run workflow" on the Actions page does the same on demand; tick "publish" to publish a release as well.
+#
+# Mac builds are signed and notarized when these repository secrets exist: MAC_CERTIFICATE (Developer ID
+# Application certificate as base64 .p12), MAC_CERTIFICATE_PASSWORD, APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD,
+# APPLE_TEAM_ID. Without them, the Mac app is only signed ad hoc (macOS asks once before the first start).
 
 name: Release
 
 on:
   push:
     branches:
-      - main
+      - '**'
     tags:
       - 'v*'
+  pull_request:
   workflow_dispatch:
     inputs:
       publish:
@@ -34,7 +41,7 @@ concurrency:
 
 jobs:
   check:
-    name: Check whether a release is due
+    name: Decide what to do
     # Releases are only published from the main repository, not from forks or copies.
     if: github.repository == 'Iroxle/docpilot'
     runs-on: ubuntu-latest
@@ -61,6 +68,8 @@ jobs:
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
             build=true
             publish="${PUBLISH_INPUT:-false}"
+          elif [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            build=true
           elif [ "$GITHUB_REF_TYPE" = "tag" ]; then
             if [ "$GITHUB_REF_NAME" != "$tag" ]; then
               echo "::error::Tag $GITHUB_REF_NAME does not match version $version in package.json."
@@ -68,6 +77,8 @@ jobs:
             fi
             build=true
             publish=true
+          elif [ "$GITHUB_REF_NAME" != "main" ]; then
+            build=true
           elif gh release view "$tag" > /dev/null 2>&1; then
             echo "Release $tag already exists. Nothing to do."
           else
@@ -87,11 +98,11 @@ jobs:
           echo "Version $version: build=$build, publish=$publish"
 
   windows:
-    name: Windows installers (x64)
+    name: Windows (tests and installers)
     needs: check
     if: needs.check.outputs.build == 'true'
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     defaults:
       run:
         shell: bash
@@ -111,33 +122,140 @@ jobs:
       - name: Check the code
         run: npm run lint
 
+      - name: Core tests
+        run: npm run test:core 2>&1 | tee core-tests.log; exit "${PIPESTATUS[0]}"
+
+      - name: App tests
+        if: ${{ !cancelled() }}
+        run: npm test 2>&1 | tee app-tests.log; exit "${PIPESTATUS[0]}"
+
+      - name: Report test failures
+        if: failure()
+        run: node scripts/ci-report.js "Windows" core-tests.log app-tests.log
+
       - name: Build the installers (EXE setup, MSI, portable EXE)
+        if: ${{ !cancelled() && (success() || needs.check.outputs.publish != 'true') }}
         run: npm run dist
 
-      - name: Create checksums
-        working-directory: release
-        run: sha256sum DocPilot-Setup-x64.exe DocPilot-x64.msi DocPilot-Portable-x64.exe > SHA256SUMS.txt
-
       - name: Keep the installers as a workflow artifact
+        if: ${{ !cancelled() && (success() || needs.check.outputs.publish != 'true') }}
         uses: actions/upload-artifact@v5
         with:
-          name: DocPilot-${{ needs.check.outputs.version }}-windows-x64
+          name: DocPilot-${{ needs.check.outputs.version }}-windows
           if-no-files-found: error
           path: |
             release/DocPilot-Setup-x64.exe
             release/DocPilot-x64.msi
             release/DocPilot-Portable-x64.exe
-            release/SHA256SUMS.txt
+
+  mac:
+    name: macOS (tests and disk images)
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Core tests
+        run: npm run test:core 2>&1 | tee core-tests.log; exit "${PIPESTATUS[0]}"
+
+      - name: App tests
+        if: ${{ !cancelled() }}
+        run: npm test 2>&1 | tee app-tests.log; exit "${PIPESTATUS[0]}"
+
+      - name: Report test failures
+        if: failure()
+        run: node scripts/ci-report.js "macOS" core-tests.log app-tests.log
+
+      - name: Build the disk images (Apple silicon and Intel)
+        if: ${{ !cancelled() && (success() || needs.check.outputs.publish != 'true') }}
+        env:
+          CSC_LINK: ${{ secrets.MAC_CERTIFICATE }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -n "$CSC_LINK" ]; then
+            # Developer ID signature and notarization by Apple.
+            npm run build
+            node scripts/mac-helper.js
+            npx electron-builder --mac --publish never
+          else
+            # Ad hoc signature (also for pull requests, where electron-builder would otherwise not sign at all).
+            unset CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID
+            CSC_FOR_PULL_REQUEST=true npm run dist:mac
+          fi
+
+      - name: Check the built apps
+        if: ${{ !cancelled() && (success() || needs.check.outputs.publish != 'true') }}
+        run: |
+          for app in release/mac-arm64/DocPilot.app release/mac/DocPilot.app; do
+            echo "== $app"
+            codesign --verify --deep --strict --verbose=2 "$app"
+            test -x "$app/Contents/Resources/docpilot-scan"
+            lipo -archs "$app/Contents/MacOS/DocPilot"
+          done
+          # The Apple silicon build must start and keep running (the runner is an Apple silicon Mac).
+          DP_HIDE=1 DP_USER_DATA="$RUNNER_TEMP/dp-smoke" release/mac-arm64/DocPilot.app/Contents/MacOS/DocPilot &
+          pid=$!
+          sleep 20
+          if ! kill -0 "$pid" 2> /dev/null; then
+            echo "::error title=macOS::The app quit right after starting."
+            exit 1
+          fi
+          kill "$pid"
+          echo "The app started."
+
+      - name: Keep the disk images as a workflow artifact
+        if: ${{ !cancelled() && (success() || needs.check.outputs.publish != 'true') }}
+        uses: actions/upload-artifact@v5
+        with:
+          name: DocPilot-${{ needs.check.outputs.version }}-mac
+          if-no-files-found: error
+          path: |
+            release/DocPilot-mac-arm64.dmg
+            release/DocPilot-mac-x64.dmg
+
+  publish:
+    name: Publish the release
+    needs: [check, windows, mac]
+    if: needs.check.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v5
+
+      - name: Download the builds
+        uses: actions/download-artifact@v5
+        with:
+          path: release
+          merge-multiple: true
+
+      - name: Create checksums
+        working-directory: release
+        run: sha256sum DocPilot-Setup-x64.exe DocPilot-x64.msi DocPilot-Portable-x64.exe DocPilot-mac-arm64.dmg DocPilot-mac-x64.dmg > SHA256SUMS.txt
 
       - name: Publish the release
-        if: needs.check.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.check.outputs.tag }}
           VERSION: ${{ needs.check.outputs.version }}
         run: |
           node scripts/release-notes.js "$VERSION" > release-notes.md
-          files="release/DocPilot-Setup-x64.exe release/DocPilot-x64.msi release/DocPilot-Portable-x64.exe release/SHA256SUMS.txt"
+          files="release/DocPilot-Setup-x64.exe release/DocPilot-x64.msi release/DocPilot-Portable-x64.exe release/DocPilot-mac-arm64.dmg release/DocPilot-mac-x64.dmg release/SHA256SUMS.txt"
           if gh release view "$TAG" > /dev/null 2>&1; then
             gh release upload "$TAG" $files --clobber
           else

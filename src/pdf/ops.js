@@ -555,7 +555,7 @@ export const removeLinks = (bytes, pageIdx, rect) => edit(bytes, (d) => {
   }
 });
 
-// --- Lesezeichen -----------------------------------------------------------------------
+// --- Bookmarks -----------------------------------------------------------------------
 /** tree: [{title, page, top, children, open}] */
 export const setOutline = (bytes, tree) => edit(bytes, (d) => {
   const ctx = d.context;
@@ -593,7 +593,7 @@ export const setOutline = (bytes, tree) => edit(bytes, (d) => {
   catalog.set(PDFName.of('Outlines'), rootRef);
 });
 
-// --- Dokumenteigenschaften -------------------------------------------------------------
+// --- Document properties -------------------------------------------------------------
 export const setMetadata = (bytes, m) => edit(bytes, (d) => {
   if (m.title !== undefined) d.setTitle(m.title);
   if (m.author !== undefined) d.setAuthor(m.author);
@@ -658,7 +658,7 @@ export const removeAttachment = (bytes, name) => edit(bytes, (d) => {
   if (af) d.catalog.set(PDFName.of('AF'), d.context.obj(all.map(([, v]) => v)));
 });
 
-// --- Dokument-JavaScript ---------------------------------------------------------------
+// --- Document JavaScript ---------------------------------------------------------------
 export const setDocumentJavascript = (bytes, name, code) => edit(bytes, (d) => {
   const ctx = d.context;
   let names = d.catalog.lookupMaybe(PDFName.of('Names'), PDFDict);
@@ -684,7 +684,7 @@ export async function listDocumentJavascript(bytes) {
   });
 }
 
-// --- Bereinigen, Optimieren ------------------------------------------------------------
+// --- Sanitize, optimize ------------------------------------------------------------
 /** o: {metadata, attachments, comments, javascript, forms, links, hiddenLayers, thumbs} */
 export const sanitizeDocument = (bytes, o) => edit(bytes, (d) => {
   const c = d.catalog; const ctx = d.context;
@@ -998,7 +998,7 @@ export async function analyze(bytes) {
   };
 }
 
-// --- Formulare -------------------------------------------------------------------------
+// --- Forms -------------------------------------------------------------------------
 /** type: text|multiline|checkbox|radio|dropdown|list|button|signature */
 export function addFormField(bytes, pageIdx, rect, o) {
   return edit(bytes, async (d) => placeField(d, await d.embedFont(StandardFonts.Helvetica), pageIdx, rect, o));

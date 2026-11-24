@@ -4,11 +4,11 @@
 
 <h1 align="center">DocPilot</h1>
 
-<p align="center">View, edit, comment on and sign PDFs.<br>A Windows PDF editor with a familiar, easy-to-use layout.</p>
+<p align="center">View, edit, comment on and sign PDFs.<br>A PDF editor for Windows and Mac with a familiar, easy-to-use layout.</p>
 
 <p align="center">
   <a href="https://github.com/Iroxle/docpilot/releases/latest"><img alt="Latest version" src="https://img.shields.io/github/v/release/Iroxle/docpilot?style=for-the-badge&label=version&color=0e7c86"></a>
-  <img alt="Platform: Windows 10/11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-0e7c86?style=for-the-badge">
+  <img alt="Platforms: Windows 10/11 and macOS 12 or later" src="https://img.shields.io/badge/Windows%20%7C%20macOS-0e7c86?style=for-the-badge">
   <img alt="Built with Electron" src="https://img.shields.io/badge/Electron-47848f?style=for-the-badge&logo=electron&logoColor=white">
   <img alt="Offline OCR" src="https://img.shields.io/badge/OCR-offline-2e7d32?style=for-the-badge">
   <a href="https://github.com/Iroxle/docpilot/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/Iroxle/docpilot/total?style=for-the-badge&color=555"></a>
@@ -26,7 +26,7 @@
         <img src="docs/card-download.svg" alt="Download DocPilot" height="96">
       </a>
       <h3>Download DocPilot</h3>
-      <p>Get the latest release for Windows 10 and 11:<br>setup, MSI for IT deployment, or portable.</p>
+      <p>Get the latest release for Windows and Mac:<br>setup, MSI or portable for Windows, disk image for Mac.</p>
       <strong><a href="https://github.com/Iroxle/docpilot/releases/latest">Download latest version →</a></strong>
       <br><br>
     </td>
@@ -46,7 +46,7 @@
 <details>
 <summary><strong>Who is this for?</strong></summary>
 
-DocPilot is for people and teams on Windows who work with PDFs every day and want one program for it: reading, commenting, editing text and images, filling in and signing forms, redacting, converting to and from Office, and making scans searchable and editable. Everything runs on your own PC. Documents are never uploaded, and text recognition works offline.
+DocPilot is for people and teams on Windows and Mac who work with PDFs every day and want one program for it: reading, commenting, editing text and images, filling in and signing forms, redacting, converting to and from Office, and making scans searchable and editable. Everything runs on your own computer. Documents are never uploaded, and text recognition works offline.
 
 For IT departments there is an MSI for silent, machine-wide installation. JavaScript in PDFs and macros in Office files are blocked, so documents cannot run code on your PC.
 </details>
@@ -54,6 +54,7 @@ For IT departments there is an MSI for silent, machine-wide installation. JavaSc
 <details>
 <summary><strong>Recent changes</strong></summary>
 
+- **2026-11-28 (1.1.0):** DocPilot for Mac: disk images for Apple silicon and Intel Macs, with the same features as on Windows.
 - **2026-11-24 (1.0.2):** Find and replace in the whole document, including recognized text in scans.
 - **2026-11-24 (1.0.2):** Form fields are detected automatically, with a preview before they are created.
 - **2026-11-24 (1.0.2):** Tables arrive as real tables in Word, Excel and PowerPoint exports.
@@ -90,7 +91,7 @@ The full list is in [CHANGELOG.md](CHANGELOG.md).
 
 ## Overview
 
-DocPilot is a Windows program for working with PDF files. The interface uses a familiar layout: menu bar, tabs, tools pane on the left, quick tools on the side, sidebar on the right and page controls at the bottom right. It is available as a setup program, as an MSI for IT deployment and as a portable version.
+DocPilot is a program for Windows and macOS for working with PDF files. The interface uses a familiar layout: menu bar, tabs, tools pane on the left, quick tools on the side, sidebar on the right and page controls at the bottom right. For Windows it is available as a setup program, as an MSI for IT deployment and as a portable version; for Mac as a disk image for Apple silicon and Intel.
 
 | Area | Selected features |
 |---|---|
@@ -135,7 +136,7 @@ The complete list, including all known limitations, is in **[FEATURES.md](FEATUR
   <tr>
     <td colspan="2" valign="top">
       <img src="docs/screenshots/dark.png" alt="Dark appearance with the find and replace bar open above a document">
-      <p align="center"><b>Dark appearance and find and replace</b><br><sub>Light, dark or the same as Windows; pages stay white like paper. Replace text in the whole document.</sub></p>
+      <p align="center"><b>Dark appearance and find and replace</b><br><sub>Light, dark or the same as the system; pages stay white like paper. Replace text in the whole document.</sub></p>
     </td>
   </tr>
 </table>
@@ -149,24 +150,29 @@ The complete list, including all known limitations, is in **[FEATURES.md](FEATUR
 | **Windows 10 / 11** | x64 | `.exe` (setup) | Most people. Installs for your user, no administrator rights needed. | [DocPilot setup for Windows](https://github.com/Iroxle/docpilot/releases/latest/download/DocPilot-Setup-x64.exe) |
 | **Windows 10 / 11** | x64 | `.msi` | IT departments. Installs for all users, supports silent installation. | [DocPilot MSI for Windows](https://github.com/Iroxle/docpilot/releases/latest/download/DocPilot-x64.msi) |
 | **Windows 10 / 11** | x64 | `.exe` (portable) | Trying it out or a USB stick. Runs without installation. | [DocPilot portable for Windows](https://github.com/Iroxle/docpilot/releases/latest/download/DocPilot-Portable-x64.exe) |
+| **macOS 12 or later** | Apple silicon | `.dmg` | Macs with an M-series chip (from late 2020). | [DocPilot for Mac (Apple silicon)](https://github.com/Iroxle/docpilot/releases/latest/download/DocPilot-mac-arm64.dmg) |
+| **macOS 12 or later** | Intel | `.dmg` | Older Macs with an Intel processor. | [DocPilot for Mac (Intel)](https://github.com/Iroxle/docpilot/releases/latest/download/DocPilot-mac-x64.dmg) |
 
 All versions and their checksums (`SHA256SUMS.txt`) are on the [releases page](https://github.com/Iroxle/docpilot/releases).
 
 - **Windows warning:** The installers are not digitally signed yet. Windows SmartScreen may show "Windows protected your PC". Choose "More info" and then "Run anyway".
 - **Portable version:** It does not register PDF as a file type and starts a little slower, because it unpacks itself on every start.
-- **Other systems:** DocPilot uses Windows features (fonts, Office conversion, scanner) and is not available for macOS or Linux.
+- **Mac: which file?** Apple menu > About This Mac shows "Chip" (Apple silicon) or "Processor" (Intel).
+- **Mac: first start.** Open the disk image and drag DocPilot into the Applications folder. DocPilot for Mac is not notarized by Apple yet, so macOS asks once before the first start: open DocPilot, close the message, then go to System Settings > Privacy & Security and click "Open Anyway" next to DocPilot. On macOS 14 and earlier, Control-click DocPilot in the Applications folder and choose "Open" instead.
+- **Mac differences:** Keyboard shortcuts use ⌘ instead of Ctrl. Office files are converted with Microsoft Office for Mac if it is installed. Details are in [FEATURES.md](FEATURES.md#mac).
+- **Linux:** DocPilot is not available for Linux.
 
 ## Technology
 
 | Component | Purpose | License |
 |---|---|---|
-| [Electron](https://www.electronjs.org/) | Windows program | MIT |
+| [Electron](https://www.electronjs.org/) | Desktop program for Windows and macOS | MIT |
 | [PDF.js](https://mozilla.github.io/pdf.js/) | Rendering, text layer, forms, script sandbox | Apache 2.0 |
 | [pdf-lib](https://github.com/cantoo-scribe/pdf-lib) (Cantoo fork) | Writing PDFs, encryption | MIT |
 | [Tesseract.js](https://tesseract.projectnaptha.com/) | Text recognition (OCR) | Apache 2.0 |
 | [node-forge](https://github.com/digitalbazaar/forge) | Digital signatures (PKCS#7) | BSD/GPL (BSD chosen) |
 | docx, ExcelJS, PptxGenJS, mammoth | Office export and import | MIT / BSD |
-| electron-builder (NSIS, WiX) | Setup, MSI and portable builds | MIT |
+| electron-builder (NSIS, WiX, DMG) | Setup, MSI, portable and Mac builds | MIT |
 
 Components with an AGPL license were deliberately avoided. The full list of included open-source components and their license texts is in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
@@ -175,6 +181,7 @@ Components with an AGPL license were deliberately avoided. The full list of incl
 ```
 electron/        Main process: window, menu, file access, printing, Office conversion
   fonts.js       Font catalog like Word, default font from Normal.dotm
+  mac.js         macOS: Office conversion, scanner, font folders
 src/             User interface
   main.js        App: tabs, home page, commands
   viewer.js      Page rendering
@@ -187,7 +194,7 @@ src/             User interface
   scan.js        Text recognition, scan detection, editing recognized text in images
   tools.js       All tool groups
   panels.js      Sidebars
-  prefs.js       Preferences (Ctrl+K), including the appearance (light, dark, same as Windows)
+  prefs.js       Preferences (Ctrl+K), including the appearance (light, dark, same as the system)
   styles.css     Look; all interface colors as variables (dark: only different values)
   pdf/           PDF core: page operations, content stream, comments, signatures,
                  removing text from images (inpaint.js), analysis of
@@ -195,7 +202,8 @@ src/             User interface
                  replacing within a paragraph including rewrap (replace.js), detecting
                  form positions from lines, boxes and circles (formdetect.js), detecting
                  tables for export (tables.js), rotation angle of skewed scans (deskew.js)
-scripts/         Build, icons (npm run icons), third-party notices (npm run notices), release notes
+scripts/         Build, icons (npm run icons), third-party notices (npm run notices), release notes,
+                 Mac scanner helper (mac/scan.swift)
 tests/           Automated tests (app and PDF core)
 assets/          Logo and icons
 docs/            Screenshots and images for this README
@@ -204,7 +212,7 @@ docs/            Screenshots and images for this README
 
 ## Development
 
-Requirements: Windows 10/11 and [Node.js](https://nodejs.org/) (developed and tested with version 26).
+Requirements: Windows 10/11 or macOS 12 or later, and [Node.js](https://nodejs.org/) (developed and tested with version 26).
 
 ```bash
 npm ci
@@ -218,6 +226,7 @@ npm ci
 | `npm test` | App tests in the real Electron app (50 flows, about 23 minutes) |
 | `npm run dist` | Build the setup, MSI and portable version to `release/` |
 | `npm run dist:msi` | Build only the MSI |
+| `npm run dist:mac` | Build the Mac disk images to `release/` (only on a Mac with the Xcode command line tools) |
 | `npm run icons` | Create the app icons from `assets/emblem.svg` |
 | `npm run notices` | Regenerate `THIRD_PARTY_NOTICES.md` after dependency updates |
 | `npm run lint` | Check the code |
@@ -228,12 +237,14 @@ The app tests run against the development build. With `DP_TEST_POLICY=allow`, Ja
 
 ## Releases
 
-Installers are built by GitHub Actions ([release.yml](.github/workflows/release.yml)) on a Windows runner:
+Installers are built by GitHub Actions ([release.yml](.github/workflows/release.yml)) on a Windows and a Mac runner:
 
 1. Set the new version in `package.json` and add a section for it to [CHANGELOG.md](CHANGELOG.md).
 2. Push to `main`.
 
-If there is no release for that version yet, the workflow checks the code, builds the setup, the MSI and the portable version, and publishes them as release `v<version>` with checksums. The release text is the changelog section of that version. Pushes that do not change the version only run a short check. Running the workflow by hand ("Run workflow") builds the installers on demand, optionally publishing them.
+If there is no release for that version yet, the workflow runs all tests on Windows and macOS, builds the setup, the MSI, the portable version and the two Mac disk images, and publishes them as release `v<version>` with checksums. The release text is the changelog section of that version. Pushes to `main` that do not change the version do nothing. Pushes to other branches and pull requests run the tests and build everything without publishing. Running the workflow by hand ("Run workflow") does the same, optionally publishing a release.
+
+The Mac app is signed ad hoc. Once the repository has an Apple Developer ID certificate and an Apple ID as secrets (see the comment at the top of the workflow), it is signed and notarized by Apple, and the first-start step on the Mac is no longer needed.
 
 ## Deployment in organizations
 
@@ -245,6 +256,7 @@ msiexec /i DocPilot-x64.msi /qn
 - Start menu and desktop shortcuts; PDF is registered as a file type.
 - A new MSI replaces the installed version automatically.
 - The setup (`.exe`) installs per user instead. Use one of the two on a PC, not both.
+- **Mac:** DocPilot can be distributed like any other app from a disk image, for example with device management (MDM).
 - **Open:** The installers are not yet digitally signed. Without a code signing certificate, Windows SmartScreen warns and AppLocker may block them.
 
 ## Security
@@ -253,7 +265,7 @@ msiexec /i DocPilot-x64.msi /qn
 - File attachments are never run, only saved. On its own, the program only opens folders, never files or programs.
 - Links only open web pages and email, after confirmation.
 - HTML is converted without JavaScript and without internet access.
-- Electron fuses: the `.exe` cannot be misused as a Node.js interpreter, through `NODE_OPTIONS` or with a debugger, and it only loads its own verified app archive.
+- Electron fuses: the program cannot be misused as a Node.js interpreter, through `NODE_OPTIONS` or with a debugger, and it only loads its own verified app archive.
 
 ## Contributing
 

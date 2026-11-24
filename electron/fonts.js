@@ -11,7 +11,8 @@ const zlib = require('zlib');
 
 const WIN = process.env.WINDIR || 'C:\\Windows';
 const LOCAL = process.env.LOCALAPPDATA || '';
-const FONT_DIRS = [
+// On a Mac, the font folders from electron/mac.js apply.
+const FONT_DIRS = process.platform === 'darwin' ? require('./mac').FONT_DIRS : [
   { dir: path.join(WIN, 'Fonts'), deep: false, cloud: false },
   LOCAL && { dir: path.join(LOCAL, 'Microsoft', 'Windows', 'Fonts'), deep: false, cloud: false },
   LOCAL && { dir: path.join(LOCAL, 'Microsoft', 'FontCache', '4', 'CloudFonts'), deep: true, cloud: true },
@@ -124,7 +125,7 @@ class FontCatalog {
 
   async scan() {
     let cache = {};
-    try { const c = JSON.parse(await fs.promises.readFile(this.cacheFile, 'utf8')); if (c.version === CACHE_VERSION) cache = c.files || {}; } catch { /* neu aufbauen */ }
+    try { const c = JSON.parse(await fs.promises.readFile(this.cacheFile, 'utf8')); if (c.version === CACHE_VERSION) cache = c.files || {}; } catch { /* rebuild */ }
     const next = {};
     const faces = [];
     for (const d of FONT_DIRS) {
@@ -145,7 +146,8 @@ class FontCatalog {
 
     const byName = new Map();
     for (const f of faces) {
-      if (f.family.startsWith('@')) continue;
+      // Vertical fonts (@) and the hidden macOS system fonts (names starting with a dot) are not offered.
+      if (f.family.startsWith('@') || f.family.startsWith('.')) continue;
       const key = f.family.toLowerCase();
       let fam = byName.get(key);
       if (!fam) { fam = { name: f.family, faces: [null, null, null, null], embeddable: false, symbol: f.symbol, cloud: f.cloud, size: 0 }; byName.set(key, fam); }
@@ -235,7 +237,10 @@ const unxml = (s) => s && s.replace(/&amp;/g, '&').replace(/&quot;/g, '"').repla
  * theme fonts from the theme). If the template is missing, Word's built-in default applies.
  */
 function wordDefaults() {
-  try { return parseNormal(fs.readFileSync(path.join(process.env.APPDATA || '', 'Microsoft', 'Templates', 'Normal.dotm'))); }
+  try {
+    const file = process.platform === 'darwin' ? require('./mac').NORMAL_DOTM : path.join(process.env.APPDATA || '', 'Microsoft', 'Templates', 'Normal.dotm');
+    return parseNormal(fs.readFileSync(file));
+  }
   catch { return { body: null, heading: null, size: null, source: 'word-default' }; }
 }
 function parseNormal(buf) {
@@ -262,7 +267,7 @@ function parseNormal(buf) {
     out.size = sizeOf(normalRPr) || sizeOf(defaults) || 10;
     out.heading = major;
     out.source = 'normal.dotm';
-  } catch { /* unlesbare Vorlage: Words eingebauter Standard */ }
+  } catch { /* unreadable template: Word's built-in default */ }
   return out;
 }
 

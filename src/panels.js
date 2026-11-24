@@ -48,7 +48,7 @@ export class Panels {
     Promise.resolve(this[m[this.current]](token)).catch(errToast);
   }
 
-  // --- Kommentare ------------------------------------------------------------------------
+  // --- Comments ------------------------------------------------------------------------
   renderComments() {
     const doc = this.doc;
     let list = doc.allAnnots();
@@ -115,7 +115,7 @@ export class Panels {
     });
   }
 
-  // --- Miniaturen ------------------------------------------------------------------------
+  // --- Thumbnails ------------------------------------------------------------------------
   thumbCard(i, width, sel, opts) {
     const doc = this.doc;
     const box = doc.pages[i]; const rot = box.rotate % 180 !== 0;
@@ -123,7 +123,7 @@ export class Panels {
     const ph = h('div', { style: { width: `${width}px`, height: `${width * (rot ? 1 / ratio : ratio)}px`, background: '#fff' } });
     const el = h('button', { class: `thumb ${sel.has(i) ? 'sel' : ''} ${i === this.viewer.current && !opts.noCurrent ? 'on' : ''}`, type: 'button', draggable: 'true', data: { page: i } }, ph, h('div', { class: 'n' }, doc.label(i)));
     el.addEventListener('click', (e) => {
-      if (e.ctrlKey) { if (sel.has(i)) sel.delete(i); else sel.add(i); } else if (e.shiftKey && this.lastThumb !== undefined) { for (let k = Math.min(i, this.lastThumb); k <= Math.max(i, this.lastThumb); k++) sel.add(k); } else { sel.clear(); sel.add(i); }
+      if (e.ctrlKey || e.metaKey) { if (sel.has(i)) sel.delete(i); else sel.add(i); } else if (e.shiftKey && this.lastThumb !== undefined) { for (let k = Math.min(i, this.lastThumb); k <= Math.max(i, this.lastThumb); k++) sel.add(k); } else { sel.clear(); sel.add(i); }
       this.lastThumb = i;
       el.parentElement.querySelectorAll('.thumb').forEach((t) => t.classList.toggle('sel', sel.has(+t.dataset.page)));
       opts.onClick?.(i);
@@ -184,7 +184,7 @@ export class Panels {
     this.panel.querySelectorAll('.thumb').forEach((t) => { const on = +t.dataset.page === i; t.classList.toggle('on', on); if (on) t.scrollIntoView({ block: 'nearest' }); });
   }
 
-  // --- Lesezeichen -----------------------------------------------------------------------
+  // --- Bookmarks -----------------------------------------------------------------------
   async loadOutline() {
     const doc = this.doc;
     const raw = await doc.pdf.getOutline();
@@ -237,7 +237,7 @@ export class Panels {
   async bmDelete(tree) { const f = this.selBm && this.bmFind(tree, this.selBm); if (!f) { toast('Please select a bookmark first.'); return; } f[0].splice(f[1], 1); this.selBm = null; await this.saveOutline(tree); }
   async bmMove(tree, d) { const f = this.selBm && this.bmFind(tree, this.selBm); if (!f) { toast('Please select a bookmark first.'); return; } const [l, i] = f; if (i + d < 0 || i + d >= l.length) return; [l[i], l[i + d]] = [l[i + d], l[i]]; await this.saveOutline(tree); }
 
-  // --- Anlagen ---------------------------------------------------------------------------
+  // --- Attachments ---------------------------------------------------------------------------
   async attachments() {
     const a = await this.doc.pdf.getAttachments();
     if (!a) return [];
@@ -266,7 +266,7 @@ export class Panels {
     await this.op((b) => addAttachment(b, p.split(/[\\/]/).pop(), data));
   }
 
-  // --- Ebenen ----------------------------------------------------------------------------
+  // --- Layers ----------------------------------------------------------------------------
   renderLayers() {
     const cfg = this.doc.ocConfig;
     const groups = cfg?.getGroups?.();
@@ -275,7 +275,7 @@ export class Panels {
     this.frame('Layers', [], body);
   }
 
-  // --- Signaturen ------------------------------------------------------------------------
+  // --- Signatures ------------------------------------------------------------------------
   renderSignatures() {
     const bytes = this.doc.saved;
     const list = this.doc.encrypted ? [] : verifySignatures(bytes);
@@ -291,7 +291,7 @@ export class Panels {
     this.frame('Signatures', [], body);
   }
 
-  // --- Erweiterte Suche ------------------------------------------------------------------
+  // --- Advanced search ------------------------------------------------------------------
   renderSearch() {
     const input = h('input', { class: 'fld', type: 'search', placeholder: 'Search term', spellcheck: 'false', value: this.lastSearch || '' });
     const cs = h('input', { type: 'checkbox' }); const ww = h('input', { type: 'checkbox' });

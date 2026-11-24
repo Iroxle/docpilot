@@ -1,11 +1,36 @@
 'use strict';
 const { Menu } = require('electron');
 
-/** Menu bar: File, Edit, View, E-Sign, Window, Help. */
+const MAC = process.platform === 'darwin';
+/**
+ * Shortcuts that macOS reserves get a Mac variant: Cmd+H hides the app, Cmd+Tab switches between apps,
+ * F11 shows the desktop. Everything else uses Cmd on a Mac and Ctrl on Windows (CmdOrCtrl).
+ */
+const MAC_KEYS = { 'CmdOrCtrl+H': 'Ctrl+Cmd+H', 'CmdOrCtrl+Tab': 'Ctrl+Tab', 'CmdOrCtrl+Shift+Tab': 'Ctrl+Shift+Tab', F11: 'Ctrl+Cmd+F' };
+const key = (a) => (MAC && MAC_KEYS[a]) || a;
+
+/** Menu bar: File, Edit, View, E-Sign, Window, Help (on a Mac with the DocPilot app menu in front). */
 function buildMenu({ recent, send, openRecent, devtools }) {
-  const c = (label, cmd, accelerator, arg) => ({ label, accelerator, click: () => send(cmd, arg) });
+  const c = (label, cmd, accelerator, arg) => ({ label, accelerator: key(accelerator), click: () => send(cmd, arg) });
   const sep = { type: 'separator' };
+  const appMenu = MAC ? [{
+    label: 'DocPilot',
+    submenu: [
+      c('About DocPilot', 'about'),
+      sep,
+      c('Preferences...', 'preferences', 'Cmd+,'),
+      sep,
+      { role: 'services', label: 'Services' },
+      sep,
+      { role: 'hide', label: 'Hide DocPilot' },
+      { role: 'hideOthers', label: 'Hide others' },
+      { role: 'unhide', label: 'Show all' },
+      sep,
+      c('Quit DocPilot', 'quit', 'Cmd+Q'),
+    ],
+  }] : [];
   const template = [
+    ...appMenu,
     {
       label: 'File',
       submenu: [
@@ -24,8 +49,8 @@ function buildMenu({ recent, send, openRecent, devtools }) {
         c('Close', 'close-tab', 'CmdOrCtrl+W'),
         c('Properties...', 'properties', 'CmdOrCtrl+D'),
         c('Print...', 'print', 'CmdOrCtrl+P'),
-        sep,
-        c('Exit', 'quit', 'CmdOrCtrl+Q'),
+        // On a Mac, "Quit DocPilot" is in the app menu.
+        ...(MAC ? [] : [sep, c('Exit', 'quit', 'CmdOrCtrl+Q')]),
       ],
     },
     {
@@ -33,6 +58,8 @@ function buildMenu({ recent, send, openRecent, devtools }) {
       submenu: [
         c('Undo', 'undo', 'CmdOrCtrl+Z'),
         c('Redo', 'redo', 'CmdOrCtrl+Y'),
+        // On a Mac, Cmd+Shift+Z also redoes, as in other Mac apps.
+        ...(MAC ? [{ ...c('Redo', 'redo', 'Cmd+Shift+Z'), visible: false }] : []),
         sep,
         { role: 'cut', label: 'Cut' },
         { role: 'copy', label: 'Copy' },
@@ -58,12 +85,12 @@ function buildMenu({ recent, send, openRecent, devtools }) {
         { label: 'Page navigation', submenu: [c('First page', 'first-page'), c('Previous page', 'prev-page'), c('Next page', 'next-page'), c('Last page', 'last-page'), c('Go to page...', 'goto-page', 'CmdOrCtrl+Shift+G'), sep, c('Previous view', 'nav-back', 'Alt+Left'), c('Next view', 'nav-forward', 'Alt+Right')] },
         { label: 'Page Display', submenu: [c('Single page', 'layout', 'CmdOrCtrl+Alt+1', 'single'), c('Continuous', 'layout', 'CmdOrCtrl+Alt+2', 'continuous'), c('Two pages', 'layout', 'CmdOrCtrl+Alt+3', 'double'), c('Two pages continuous', 'layout', 'CmdOrCtrl+Alt+4', 'double-continuous')] },
         { label: 'Zoom', submenu: [c('Zoom in', 'zoom-in', 'CmdOrCtrl+='), c('Zoom out', 'zoom-out', 'CmdOrCtrl+-'), sep, c('Fit page', 'zoom', 'CmdOrCtrl+0', 'page'), c('Actual size', 'zoom', 'CmdOrCtrl+1', 'actual'), c('Fit width', 'zoom', 'CmdOrCtrl+2', 'width'), c('Fit visible height', 'zoom', 'CmdOrCtrl+3', 'height'), sep, c('Marquee zoom', 'tool', undefined, 'zoom')] },
-        { label: 'Einblenden/Ausblenden', submenu: [c('Rulers', 'toggle-rulers', 'CmdOrCtrl+R'), c('Grid', 'toggle-grid', 'CmdOrCtrl+U'), c('Sidebar', 'toggle-right', 'F4'), c('Tools pane', 'toggle-left', 'Shift+F4')] },
+        { label: 'Show/Hide', submenu: [c('Rulers', 'toggle-rulers', 'CmdOrCtrl+R'), c('Grid', 'toggle-grid', 'CmdOrCtrl+U'), c('Sidebar', 'toggle-right', 'F4'), c('Tools pane', 'toggle-left', 'Shift+F4')] },
         sep,
         c('All tools', 'show-tools'),
         c('Reading mode', 'reading-mode', 'CmdOrCtrl+H'),
         c('Full screen mode', 'fullscreen', 'CmdOrCtrl+L'),
-        { label: 'Read Out Loud', submenu: [c('Read page aloud', 'speak', 'CmdOrCtrl+Shift+V', 'page'), c('Read document aloud', 'speak', 'CmdOrCtrl+Shift+B', 'doc'), c('Pause/Fortsetzen', 'speak', 'CmdOrCtrl+Shift+C', 'pause'), c('Exit', 'speak', 'CmdOrCtrl+Shift+E', 'stop')] },
+        { label: 'Read Out Loud', submenu: [c('Read page aloud', 'speak', 'CmdOrCtrl+Shift+V', 'page'), c('Read document aloud', 'speak', 'CmdOrCtrl+Shift+B', 'doc'), c('Pause/Resume', 'speak', 'CmdOrCtrl+Shift+C', 'pause'), c('Exit', 'speak', 'CmdOrCtrl+Shift+E', 'stop')] },
       ],
     },
     {
@@ -85,7 +112,7 @@ function buildMenu({ recent, send, openRecent, devtools }) {
         c('Close all tabs', 'close-all'),
         sep,
         { role: 'minimize', label: 'Minimize' },
-        { role: 'togglefullscreen', label: 'Full-screen window', accelerator: 'F11' },
+        { role: 'togglefullscreen', label: 'Full-screen window', accelerator: key('F11') },
       ],
     },
     {

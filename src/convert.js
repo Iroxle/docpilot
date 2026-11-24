@@ -246,7 +246,7 @@ export async function pageImages(app, o, write, progress) {
   }
 }
 
-// --- PDF erstellen -----------------------------------------------------------------------
+// --- Create PDF -----------------------------------------------------------------------
 const HTML_SHELL = (b) => `<!doctype html><meta charset="utf-8"><style>body{font-family:Arial,sans-serif;font-size:11pt;line-height:1.35}table{border-collapse:collapse}td,th{border:1px solid #999;padding:3px 6px}img{max-width:100%}</style>${b}`;
 
 /** Converts a file to a PDF. Returns the bytes of the PDF. */

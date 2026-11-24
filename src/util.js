@@ -2,6 +2,20 @@
 export const $ = (s, r = document) => r.querySelector(s);
 export const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
+/**
+ * On a Mac, texts in the interface name the Mac keys and settings: Cmd (⌘) instead of Ctrl, ⌥ for Alt,
+ * ⇧ for Shift, ⌫ for Del, macOS instead of Windows. Applied to all texts and tooltips created with h().
+ */
+export const MAC = globalThis.dp?.platform === 'darwin';
+const MAC_TEXT = [
+  [/\bCtrl\+(Alt\+)?(Shift\+)?/g, (_m, alt, shift) => `${alt ? '⌥' : ''}${shift ? '⇧' : ''}⌘`],
+  [/^Del$/, '⌫'],
+  [/Same as Windows/g, 'Same as macOS'],
+  [/the Windows setting \(Colors > Mode\)/g, 'the macOS setting (System Settings > Appearance)'],
+  [/the Windows policy \(HKLM\\SOFTWARE\\Policies\\DocPilot\)/g, 'a configuration profile (com.docpilot.app)'],
+];
+export const macText = (s) => (MAC && typeof s === 'string' ? MAC_TEXT.reduce((t, [re, to]) => t.replace(re, to), s) : s);
+
 export function h(tag, props, ...kids) {
   const e = document.createElement(tag);
   for (const [k, v] of Object.entries(props || {})) {
@@ -10,10 +24,11 @@ export function h(tag, props, ...kids) {
     else if (k === 'style' && typeof v === 'object') Object.assign(e.style, v);
     else if (k === 'data') Object.entries(v).forEach(([a, b]) => { e.dataset[a] = b; });
     else if (k.startsWith('on')) e.addEventListener(k.slice(2).toLowerCase(), v);
-    else if (k === 'value' || k === 'checked' || k === 'disabled' || k === 'hidden' || k === 'selected' || k === 'title' || k === 'type') e[k] = v;
+    else if (k === 'title') e.title = macText(v);
+    else if (k === 'value' || k === 'checked' || k === 'disabled' || k === 'hidden' || k === 'selected' || k === 'type') e[k] = v;
     else e.setAttribute(k, v);
   }
-  for (const c of kids.flat(Infinity)) if (c !== null && c !== undefined && c !== false) e.append(c.nodeType ? c : document.createTextNode(String(c)));
+  for (const c of kids.flat(Infinity)) if (c !== null && c !== undefined && c !== false) e.append(c.nodeType ? c : document.createTextNode(macText(String(c))));
   return e;
 }
 

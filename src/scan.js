@@ -145,7 +145,7 @@ function isNew(info, c) {
   return !texts.some(({ o, k }) => k > img.k && inside(c, o.bbox));
 }
 
-// --- Schiefe Scans ------------------------------------------------------------------------
+// --- Skewed scans ------------------------------------------------------------------------
 
 /** Is the page a scan? An image (or several strips) covers it, and there is no visible text. */
 export function isScanPage(info) {

@@ -6,6 +6,8 @@ const os = require('os');
 const { execFile, execFileSync } = require('child_process');
 const { buildMenu } = require('./menu');
 const { FontCatalog, wordDefaults } = require('./fonts');
+// macOS: counterparts of the Windows-specific parts (IT policy, Office, scanner, fonts).
+const mac = process.platform === 'darwin' ? require('./mac') : null;
 
 const APP_NAME = 'DocPilot';
 const RENDERER_DIR = path.join(__dirname, '..', 'dist', 'renderer');
@@ -54,6 +56,7 @@ const POLICY_KEY = 'HKLM\\SOFTWARE\\Policies\\DocPilot';
 function readPolicy() {
   // Only for automated tests in the development build, never in the installed program.
   if (!app.isPackaged && process.env.DP_TEST_POLICY === 'allow') return { allowJavaScript: true, allowOfficeMacros: true, key: POLICY_KEY };
+  if (mac) return Object.freeze(mac.policy());
   const p = { allowJavaScript: false, allowOfficeMacros: false, key: POLICY_KEY };
   try {
     const out = execFileSync('reg.exe', ['query', POLICY_KEY], { encoding: 'utf8', windowsHide: true, timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] });
@@ -113,7 +116,7 @@ function createWindow() {
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (e, url) => { if (!url.startsWith('app://')) e.preventDefault(); });
   win.on('close', (e) => {
-    try { writeJson('window.json', { ...win.getNormalBounds(), maximized: win.isMaximized() }); } catch { /* unkritisch */ }
+    try { writeJson('window.json', { ...win.getNormalBounds(), maximized: win.isMaximized() }); } catch { /* not critical */ }
     if (allowClose || !rendererReady) return;
     e.preventDefault();
     win.webContents.send('dp:request-close');
@@ -246,7 +249,7 @@ ipcMain.handle('dp:settings-set', (_e, s) => { writeJson('settings.json', s); ap
 // Windows fonts for new text in the PDF. Only files from the fonts folder are readable.
 const FONT_DIR = path.join(process.env.WINDIR || 'C:\\Windows', 'Fonts');
 ipcMain.handle('dp:font', async (_e, file) => {
-  const p = path.join(FONT_DIR, path.basename(file));
+  const p = mac ? mac.fontFile(file) : path.join(FONT_DIR, path.basename(file));
   try { const b = await fs.promises.readFile(p); return new Uint8Array(b.buffer, b.byteOffset, b.byteLength); } catch { return null; }
 });
 // All fonts like in Word (installed and Office cloud fonts) and Word's default font.
@@ -258,7 +261,7 @@ ipcMain.handle('dp:font-face', async (_e, id) => {
   try { const b = await fontCatalog().data(Number(id)); return b ? new Uint8Array(b.buffer, b.byteOffset, b.byteLength) : null; } catch { return null; }
 });
 ipcMain.handle('dp:srgb-icc', async () => {
-  const p = path.join(process.env.WINDIR || 'C:\\Windows', 'System32', 'spool', 'drivers', 'color', 'sRGB Color Space Profile.icm');
+  const p = mac ? mac.SRGB_ICC : path.join(process.env.WINDIR || 'C:\\Windows', 'System32', 'spool', 'drivers', 'color', 'sRGB Color Space Profile.icm');
   try { const b = await fs.promises.readFile(p); return new Uint8Array(b.buffer, b.byteOffset, b.byteLength); } catch { return null; }
 });
 // Clipboard (since Electron 45 only asynchronously via clipboard.read/write with ClipboardItem).
@@ -284,7 +287,7 @@ ipcMain.handle('dp:clipboard-image', async () => {
       const img = await readClipboardImage();
       if (img) return img;
       if (!clipboard.availableFormats().some((f) => f.startsWith('image/'))) return null;
-    } catch { /* gesperrt: erneut versuchen */ }
+    } catch { /* locked: try again */ }
     await new Promise((r) => setTimeout(r, 120));
   }
   return null;
@@ -315,6 +318,7 @@ const OFFICE_SCRIPTS = {
   powerpoint: `$a=New-Object -ComObject PowerPoint.Application;$a.AutomationSecurity=[int]$env:DP_SEC;try{$d=$a.Presentations.Open($env:DP_IN,-1,0,0);$d.SaveAs($env:DP_OUT,32);$d.Close()}finally{$a.Quit()}`,
 };
 ipcMain.handle('dp:office-available', async () => {
+  if (mac) return mac.officeAvailable();
   try {
     const out = await runPowerShell(`foreach($n in 'Word.Application','Excel.Application','PowerPoint.Application'){ if(Test-Path "Registry::HKEY_CLASSES_ROOT\\$n\\CLSID"){$n} }`, {}, 20000);
     return out.split(/\r?\n/).filter(Boolean);
@@ -327,18 +331,20 @@ ipcMain.handle('dp:office-to-pdf', async (_e, input) => {
   const dir = tempDir();
   const out = path.join(dir, 'out.pdf');
   try {
-    await runPowerShell(OFFICE_SCRIPTS[kind], { DP_IN: input, DP_OUT: out, DP_SEC: macroSecurity() });
+    if (mac) await mac.officeToPdf(kind, input, out, macroSecurity() === '2');
+    else await runPowerShell(OFFICE_SCRIPTS[kind], { DP_IN: input, DP_OUT: out, DP_SEC: macroSecurity() });
     const b = await fs.promises.readFile(out);
     return new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-// Scanner via the Windows WIA interface.
+// Scanner via the Windows WIA interface (on a Mac via the helper program, see electron/mac.js).
 ipcMain.handle('dp:scan', async () => {
   const dir = tempDir();
   const out = path.join(dir, 'scan.png');
   try {
-    await runPowerShell(`$d=New-Object -ComObject WIA.CommonDialog;$i=$d.ShowAcquireImage();if($i){$f=New-Object -ComObject WIA.ImageFile;$p=New-Object -ComObject WIA.ImageProcess;$p.Filters.Add($p.FilterInfos.Item('Convert').FilterID);$p.Filters.Item(1).Properties.Item('FormatID').Value='{B96B3CAF-0728-11D3-9D7B-0000F81EF32E}';$i=$p.Apply($i);$i.SaveFile($env:DP_OUT)}`, { DP_OUT: out }, 600000);
+    if (mac) await mac.scan(out);
+    else await runPowerShell(`$d=New-Object -ComObject WIA.CommonDialog;$i=$d.ShowAcquireImage();if($i){$f=New-Object -ComObject WIA.ImageFile;$p=New-Object -ComObject WIA.ImageProcess;$p.Filters.Add($p.FilterInfos.Item('Convert').FilterID);$p.Filters.Item(1).Properties.Item('FormatID').Value='{B96B3CAF-0728-11D3-9D7B-0000F81EF32E}';$i=$p.Apply($i);$i.SaveFile($env:DP_OUT)}`, { DP_OUT: out }, 600000);
     if (!fs.existsSync(out)) return null;
     const b = await fs.promises.readFile(out);
     return new Uint8Array(b.buffer, b.byteOffset, b.byteLength);

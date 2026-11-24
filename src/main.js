@@ -216,7 +216,7 @@ class App {
   }
   renderToolsView() { $('#view-tools').replaceChildren(h('h2', { class: 'sec' }, 'All tools'), balanceGrid(h('div', { class: 'home-grid' }, this.tools.groups.filter((g) => !g.hidden).map((g) => this.toolCard(g.id))))); }
 
-  // --- Dokumente -------------------------------------------------------------------------
+  // --- Documents -------------------------------------------------------------------------
   async openDialog() { const p = await dp.openDialog({ title: 'Open PDF', multi: true }); for (const x of p) await this.openPath(x); return p.length; }
   async openPath(path) {
     const existing = this.docs.find((d) => d.path && d.path.toLowerCase() === path.toLowerCase());
@@ -359,7 +359,7 @@ class App {
     } catch (e) { errToast(e); return false; }
   }
 
-  // --- Befehle ---------------------------------------------------------------------------
+  // --- Commands ---------------------------------------------------------------------------
   async run(cmd, arg) {
     try { await this.exec(cmd, arg); } catch (e) { errToast(e); }
   }
@@ -496,7 +496,7 @@ class App {
     await messageBox('Keyboard shortcuts', h('table', { class: 'tbl' }, list.map(([a, b]) => h('tr', {}, h('th', {}, a), h('td', {}, b)))));
   }
 
-  // --- Anzeige ---------------------------------------------------------------------------
+  // --- View ---------------------------------------------------------------------------
   toggleGrid() { this.grid = !this.grid; this.applyGrid(); }
   applyGrid() { const g = `${(Number(this.settings.gridSize) || 10) * 2.8346 * this.viewer.scale}px`; for (const n of this.viewer.nodes) { n.el.classList.toggle('grid', !!this.grid); n.el.style.setProperty('--grid', g); } }
   toggleRulers() {
@@ -535,7 +535,7 @@ class App {
   }
   applyFormHighlight() { /* via CSS class on the document */ }
 
-  // --- Eingaben --------------------------------------------------------------------------
+  // --- Input --------------------------------------------------------------------------
   bindKeys() {
     document.addEventListener('keydown', (e) => {
       if (document.querySelector('.scrim')) return;

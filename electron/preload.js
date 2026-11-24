@@ -5,6 +5,7 @@ const inv = (c) => (...a) => ipcRenderer.invoke(`dp:${c}`, ...a);
 const listen = (c) => (cb) => ipcRenderer.on(`dp:${c}`, (_e, ...a) => cb(...a));
 
 contextBridge.exposeInMainWorld('dp', {
+  platform: process.platform,
   ready: inv('ready'), closeOk: inv('close-ok'), setTitle: inv('set-title'), fullscreen: inv('fullscreen'), version: inv('version'), policy: inv('policy'),
   openDialog: inv('open-dialog'), saveDialog: inv('save-dialog'), folderDialog: inv('folder-dialog'),
   readFile: inv('read-file'), writeFile: inv('write-file'), fileStat: inv('file-stat'),

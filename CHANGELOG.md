@@ -2,6 +2,19 @@
 
 All notable changes to DocPilot are listed here, newest first.
 
+## 1.1.0 (2026-11-28)
+
+### New
+
+- **DocPilot for Mac.** Disk images for Macs with Apple silicon and with Intel processors (macOS 12 or later),
+  with the same features as on Windows. Keyboard shortcuts use ⌘, the DocPilot menu works like in other Mac apps,
+  Office files are converted with Microsoft Office for Mac, and "PDF from scanner" opens the macOS scanner window.
+  The first start needs one confirmation in System Settings (see the README).
+
+### Fixed
+
+- Two submenus in the View menu are now labeled in English ("Show/Hide", "Pause/Resume").
+
 ## 1.0.2 (2026-11-24)
 
 ### New

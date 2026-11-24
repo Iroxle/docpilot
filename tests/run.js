@@ -40,7 +40,7 @@ async function makeFixture(name, pages = 4) {
 (async () => {
   pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
   const app = await electron.launch({
-    executablePath: process.env.DP_EXE || path.join(root, 'node_modules', 'electron', 'dist', 'electron.exe'), // Do not pause rendering when the test window is covered by other windows.
+    executablePath: process.env.DP_EXE || require('electron'), // Do not pause rendering when the test window is covered by other windows.
     args: [...(process.env.DP_EXE ? [] : [root]), '--disable-features=CalculateNativeWinOcclusion', '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding'],
     env: { ...process.env, DP_USER_DATA: path.join(work, 'userdata'), ELECTRON_RUN_AS_NODE: undefined },
   });

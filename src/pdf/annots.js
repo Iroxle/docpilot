@@ -176,7 +176,7 @@ export async function stripAndImport(bytes) {
   return { bytes: await saveDoc(doc), annots };
 }
 
-// --- Erscheinungsbilder ------------------------------------------------------------------
+// --- Appearance streams ------------------------------------------------------------------
 const f = (v) => (Number.isFinite(v) ? (Math.round(v * 1000) / 1000).toString() : '0');
 const rg = (c) => `${f(c[0])} ${f(c[1])} ${f(c[2])} rg`;
 const RG = (c) => `${f(c[0])} ${f(c[1])} ${f(c[2])} RG`;
