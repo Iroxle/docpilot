@@ -48,7 +48,7 @@
 
 DocPilot is for people and teams on Windows who work with PDFs every day and want one program for it: reading, commenting, editing text and images, filling in and signing forms, redacting, converting to and from Office, and making scans searchable and editable. Everything runs on your own PC. Documents are never uploaded, and text recognition works offline.
 
-For IT departments there is an MSI for silent, machine-wide installation, and JavaScript in PDFs and Office macros stay blocked unless an administrator enables them by policy.
+For IT departments there is an MSI for silent, machine-wide installation. JavaScript in PDFs and macros in Office files are blocked, so documents cannot run code on your PC.
 </details>
 
 <details>
@@ -100,7 +100,7 @@ DocPilot is a Windows program for working with PDF files. The interface uses a f
 | Edit | Change, move and add text directly, move and resize images, header & footer, watermark, Bates |
 | Fonts | All fonts like in Word (including Office cloud fonts such as Aptos), default font from Word |
 | Pages | Move, rotate, delete, insert, extract, split, combine |
-| Forms | Fill in, create fields or have them detected automatically, export/import data, JavaScript only after approval by IT |
+| Forms | Fill in, create fields or have them detected automatically, export/import data; JavaScript in forms is blocked |
 | Fill and sign | Fill in and sign, digital ID, sign digitally and validate |
 | Protect | Password (AES-256), permissions, redact, sanitize |
 | Convert | Export to Word, Excel, PowerPoint (tables as real tables, numbers and dates as values), image, HTML, text. PDF from images, Office files, scanner |
@@ -154,7 +154,7 @@ All versions and their checksums (`SHA256SUMS.txt`) are on the [releases page](h
 
 - **Windows warning:** The installers are not digitally signed yet. Windows SmartScreen may show "Windows protected your PC". Choose "More info" and then "Run anyway".
 - **Portable version:** It does not register PDF as a file type and starts a little slower, because it unpacks itself on every start.
-- **Other systems:** DocPilot uses Windows features (fonts, Office conversion, scanner, policies) and is not available for macOS or Linux.
+- **Other systems:** DocPilot uses Windows features (fonts, Office conversion, scanner) and is not available for macOS or Linux.
 
 ## Technology
 
@@ -224,7 +224,7 @@ npm ci
 
 Individual app tests can be run with a name filter, for example `node tests/run.js "Text over text"`.
 
-The app tests run against the development build. With `DP_TEST_POLICY=allow`, JavaScript and macros are allowed for the tests; without the variable, the IT block applies. The variable only works in the development build, never in the installed program. Because of the security fuses, the built program can no longer be remote-controlled with Playwright.
+The app tests run against the development build. With `DP_TEST_POLICY=allow`, JavaScript and macros are allowed for the tests; without the variable, both stay blocked. The variable only works in the development build, never in the installed program. Because of the security fuses, the built program can no longer be remote-controlled with Playwright.
 
 ## Releases
 
@@ -249,7 +249,7 @@ msiexec /i DocPilot-x64.msi /qn
 
 ## Security
 
-- **JavaScript in PDFs and macros in Office files are permanently blocked.** Users cannot turn them on, not even through the settings file. Only Administrators can enable them through the policy `HKLM\SOFTWARE\Policies\DocPilot` (details in [FEATURES.md](FEATURES.md#it-policy-javascript-and-macros)).
+- **JavaScript in PDFs and macros in Office files are blocked.** Documents cannot run scripts, and Office files are converted without running their macros.
 - File attachments are never run, only saved. On its own, the program only opens folders, never files or programs.
 - Links only open web pages and email, after confirmation.
 - HTML is converted without JavaScript and without internet access.

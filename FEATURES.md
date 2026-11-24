@@ -27,7 +27,7 @@ The interface consists of a menu bar, tabs, a tools pane on the left, quick tool
 | Screenshot recognition | Also light text on a dark background (dark mode). Bullets (•, ◦, ▪) and numbers are kept as separate characters, each item is its own paragraph, wrapped lines stay aligned. Bold lines are detected. The font of the image (e.g. Segoe UI, Arial, Calibri, Verdana, Times New Roman, Georgia) is detected from the word widths and used when editing. Multi-line paragraphs reflow like in Word when edited. The recognition resolution adapts to the image. Common misreadings are checked against the glyph shapes and corrected (± instead of +, umlauts, period and comma, i instead of 1). |
 | Appearance | Under Preferences > General: Light (default), Dark or Same as Windows. In the dark appearance, the menu bar, tabs, toolbar, tools pane, sidebars, page controls, find bar, dialogs, input fields, font picker, messages, home page and "All tools" are dark and readable (measured in the test: contrast of text to background at least 4.5 to 1, for icons 3 to 1). The PDF pages stay white like paper; only the background around the pages becomes dark. Form fields and input on the page, page thumbnails and the signature pad stay light too. The change takes effect immediately, without a restart. "Same as Windows" follows the Windows mode, even if it changes while the program is running. If the choice is Light, the program stays light even when Windows is dark: nothing changes for existing users. |
 | Preferences | Structured by category (Ctrl+K): General, Documents, Units & Guides, Forms, Identity, Convert to PDF, JavaScript, Comment, Scan & OCR, Page Display, Read Out Loud, Find, Trust Manager (links, attachments) |
-| Security | JavaScript in PDFs and macros during conversion are permanently blocked (see "IT policy" below). Attachments are never run. Links only open web pages and email, after confirmation. HTML is converted without JavaScript and without internet access. The program is hardened against misuse as a scripting tool (Electron fuses). |
+| Security | JavaScript in PDFs and macros during conversion are blocked. Attachments are never run. Links only open web pages and email, after confirmation. HTML is converted without JavaScript and without internet access. The program is hardened against misuse as a scripting tool (Electron fuses). |
 | More | OCR (German, English, French, Italian), compress, compare, measure, bookmarks, attachments, layers, properties, open options, save document JavaScript |
 
 ## Limited
@@ -73,19 +73,10 @@ Silent installation: `msiexec /i DocPilot-x64.msi /qn`
 
 If DocPilot is open while installing, updating or uninstalling, the MSI stops with the message "DocPilot is still open ..." (error code 1603) before anything is changed. Otherwise Windows would only replace program files on the next restart, which can damage the installation. When deploying with Intune or SCCM, the installation is simply retried later.
 
-The MSI is not digitally signed. Without a code signing certificate, Windows shows warnings or AppLocker may block it. PDF is registered as a file type. IT sets DocPilot as the default app through a policy, because Windows does not allow an installer to do that.
+The MSI is not digitally signed. Without a code signing certificate, Windows shows warnings or AppLocker may block it. PDF is registered as a file type. Windows does not allow an installer to set the default app; choose DocPilot as the default PDF app in the Windows settings.
 
 For updates, increase the version in `package.json` and run `npm run dist`. The new MSI then replaces the old version.
 
-## IT policy: JavaScript and macros
+## JavaScript and macros
 
-By default, JavaScript in PDF documents and macros when converting Office files are **permanently blocked**. The options in Preferences are grayed out ("Blocked by IT"). Even a manually edited settings file does not turn anything on.
-
-Only IT can enable them, through Group Policy or the registry (administrator rights required):
-
-| Key | Value | Type | Effect |
-|---|---|---|---|
-| `HKLM\SOFTWARE\Policies\DocPilot` | `AllowJavaScript` = 1 | DWORD | Users may turn on JavaScript in Preferences. It then runs isolated, without file or internet access. |
-| `HKLM\SOFTWARE\Policies\DocPilot` | `AllowOfficeMacros` = 1 | DWORD | Users may allow macros during conversion. The macro settings of Office then apply. |
-
-If the key is missing or has a value other than 1, everything stays blocked. The policy is read when the program starts.
+JavaScript in PDF documents and macros when converting Office files are **blocked**. The options for them in Preferences are switched off. Scripts in documents are never run, and Office files are converted without running their macros.
