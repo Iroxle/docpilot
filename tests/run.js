@@ -1005,7 +1005,8 @@ async function makeFixture(name, pages = 4) {
     await wait(500); srv.close();
     assert.ok(pdf && pdf.length > 500, 'PDF created');
     assert.equal(hits, 0, `no network requests: ${hits}`);
-    assert.match(await textOf(await open(Buffer.from(Object.values(pdf))), 1), /Offline/);
+    // Without spaces: on a Mac, the default font sets "fl" as a ligature, which comes back as "Of fl ine".
+    assert.match((await textOf(await open(Buffer.from(Object.values(pdf))), 1)).replace(/\s+/g, ''), /Offline/);
   });
   step('Move image over image: only the dragged image moves', async () => {
     const png = async (color) => Buffer.from(await page.evaluate((c) => { const cv = document.createElement('canvas'); cv.width = 100; cv.height = 100; const x = cv.getContext('2d'); x.fillStyle = c; x.fillRect(0, 0, 100, 100); return cv.toDataURL('image/png').split(',')[1]; }, color), 'base64');
