@@ -2,19 +2,28 @@
 #
 # Release a new version:
 #   1. Set the version in package.json and add a section for it to CHANGELOG.md.
-#   2. Push a tag with the same version, for example:  git tag v1.0.3 && git push origin v1.0.3
-# The release text comes from the CHANGELOG.md section of that version.
+#   2. Push to main.
+# If there is no release for the version in package.json yet, this workflow builds the installers
+# and publishes the release "v<version>". The release text is the CHANGELOG.md section of that version.
+# Pushes that do not change the version only run the short check job.
 #
-# "Run workflow" on the Actions page builds the installers without publishing a release;
-# they can be downloaded from the workflow run as an artifact.
+# "Run workflow" on the Actions page builds the installers on demand. They can be downloaded from
+# the workflow run as an artifact; tick "publish" to publish them as a release as well.
 
 name: Release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish a release for the version in package.json
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -24,14 +33,68 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  check:
+    name: Check whether a release is due
+    # Releases are only published from the main repository, not from forks or copies.
+    if: github.repository == 'Iroxle/docpilot'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      tag: ${{ steps.plan.outputs.tag }}
+      build: ${{ steps.plan.outputs.build }}
+      publish: ${{ steps.plan.outputs.publish }}
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v5
+
+      - name: Decide what to do
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLISH_INPUT: ${{ inputs.publish }}
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          tag="v$version"
+          build=false
+          publish=false
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            build=true
+            publish="${PUBLISH_INPUT:-false}"
+          elif [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            if [ "$GITHUB_REF_NAME" != "$tag" ]; then
+              echo "::error::Tag $GITHUB_REF_NAME does not match version $version in package.json."
+              exit 1
+            fi
+            build=true
+            publish=true
+          elif gh release view "$tag" > /dev/null 2>&1; then
+            echo "Release $tag already exists. Nothing to do."
+          else
+            build=true
+            publish=true
+          fi
+          if [ "$publish" = "true" ]; then
+            # Fails early if CHANGELOG.md has no section for this version.
+            node scripts/release-notes.js "$version" > /dev/null
+          fi
+          {
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "build=$build"
+            echo "publish=$publish"
+          } >> "$GITHUB_OUTPUT"
+          echo "Version $version: build=$build, publish=$publish"
+
   windows:
     name: Windows installers (x64)
+    needs: check
+    if: needs.check.outputs.build == 'true'
     runs-on: windows-latest
     timeout-minutes: 45
     defaults:
       run:
         shell: bash
-
     steps:
       - name: Check out the code
         uses: actions/checkout@v5
@@ -41,16 +104,6 @@ jobs:
         with:
           node-version: 24
           cache: npm
-
-      - name: Check that the tag matches the version in package.json
-        if: startsWith(github.ref, 'refs/tags/')
-        run: |
-          version="v$(node -p "require('./package.json').version")"
-          if [ "$version" != "$GITHUB_REF_NAME" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME does not match version $version in package.json."
-            exit 1
-          fi
-          node scripts/release-notes.js > /dev/null
 
       - name: Install dependencies
         run: npm ci
@@ -68,7 +121,7 @@ jobs:
       - name: Keep the installers as a workflow artifact
         uses: actions/upload-artifact@v5
         with:
-          name: DocPilot-windows-x64
+          name: DocPilot-${{ needs.check.outputs.version }}-windows-x64
           if-no-files-found: error
           path: |
             release/DocPilot-Setup-x64.exe
@@ -77,14 +130,16 @@ jobs:
             release/SHA256SUMS.txt
 
       - name: Publish the release
-        if: startsWith(github.ref, 'refs/tags/')
+        if: needs.check.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.check.outputs.tag }}
+          VERSION: ${{ needs.check.outputs.version }}
         run: |
-          node scripts/release-notes.js > release-notes.md
+          node scripts/release-notes.js "$VERSION" > release-notes.md
           files="release/DocPilot-Setup-x64.exe release/DocPilot-x64.msi release/DocPilot-Portable-x64.exe release/SHA256SUMS.txt"
-          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" $files --clobber
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" $files --clobber
           else
-            gh release create "$GITHUB_REF_NAME" $files --verify-tag --title "DocPilot ${GITHUB_REF_NAME#v}" --notes-file release-notes.md
+            gh release create "$TAG" $files --target "$GITHUB_SHA" --title "DocPilot $VERSION" --notes-file release-notes.md
           fi

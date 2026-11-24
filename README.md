@@ -231,9 +231,9 @@ The app tests run against the development build. With `DP_TEST_POLICY=allow`, Ja
 Installers are built by GitHub Actions ([release.yml](.github/workflows/release.yml)) on a Windows runner:
 
 1. Set the new version in `package.json` and add a section for it to [CHANGELOG.md](CHANGELOG.md).
-2. Push a tag with the same version, for example `v1.0.3`.
+2. Push to `main`.
 
-The workflow checks the code, builds the setup, the MSI and the portable version, and publishes them as a release with checksums. The release text is the changelog section of that version. Running the workflow by hand ("Run workflow") builds the installers without publishing a release.
+If there is no release for that version yet, the workflow checks the code, builds the setup, the MSI and the portable version, and publishes them as release `v<version>` with checksums. The release text is the changelog section of that version. Pushes that do not change the version only run a short check. Running the workflow by hand ("Run workflow") builds the installers on demand, optionally publishing them.
 
 ## Deployment in organizations
 
