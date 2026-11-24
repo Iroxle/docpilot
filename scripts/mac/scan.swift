@@ -3,8 +3,8 @@
 // Usage: docpilot-scan <output.png> [window title]
 // Exit code 0 in any case; DocPilot checks whether the output file exists (missing = nothing scanned).
 //
-// The ImageKit classes are used through the Objective-C runtime (class names, key-value coding and
-// delegate selectors), so the helper builds with every macOS SDK without depending on Swift signatures.
+// The ImageKit views are configured through key-value coding and receive their delegate messages through
+// Objective-C selectors, so the helper builds with every macOS SDK without depending on Swift signatures.
 // Built by scripts/mac-helper.js.
 
 import Cocoa
@@ -23,12 +23,6 @@ final class ScanController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        guard let browserClass = NSClassFromString("IKDeviceBrowserView") as? NSView.Type,
-              let scannerClass = NSClassFromString("IKScannerDeviceView") as? NSView.Type else {
-            FileHandle.standardError.write("ImageKit is not available\n".data(using: .utf8)!)
-            finish()
-            return
-        }
         let title = CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : "Scan"
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 660),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
@@ -37,14 +31,14 @@ final class ScanController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.isReleasedWhenClosed = false
 
         // Left: list of scanners. Right: the scanner window with preview, settings and the Scan button.
-        let browser = browserClass.init(frame: NSRect(x: 0, y: 0, width: 240, height: 660))
+        let browser = IKDeviceBrowserView(frame: NSRect(x: 0, y: 0, width: 240, height: 660))
         browser.setValue(true, forKey: "displaysLocalScanners")
         browser.setValue(true, forKey: "displaysNetworkScanners")
         browser.setValue(false, forKey: "displaysLocalCameras")
         browser.setValue(false, forKey: "displaysNetworkCameras")
         browser.setValue(self, forKey: "delegate")
 
-        scannerView = scannerClass.init(frame: NSRect(x: 0, y: 0, width: 760, height: 660))
+        scannerView = IKScannerDeviceView(frame: NSRect(x: 0, y: 0, width: 760, height: 660))
         scannerView.setValue(0, forKey: "transferMode") // IKScannerDeviceViewTransferModeFileBased
         scannerView.setValue(output.deletingLastPathComponent(), forKey: "downloadsDirectory")
         scannerView.setValue("docpilot-scan-raw", forKey: "documentName")

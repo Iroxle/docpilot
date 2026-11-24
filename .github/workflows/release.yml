@@ -126,18 +126,27 @@ jobs:
       - name: Core tests
         run: npm run test:core 2>&1 | tee core-tests.log; exit "${PIPESTATUS[0]}"
 
+      # Two steps depend on things the GitHub runners do not have (the Office cloud font Aptos, and text
+      # recognition results that differ slightly there). They are skipped here and run in the normal test run.
       - name: App tests
         if: ${{ !cancelled() }}
         timeout-minutes: 50
+        env:
+          DP_SKIP_STEPS: '^(Move text over text|Scan in strips)'
         run: npm test 2>&1 | tee app-tests.log; exit "${PIPESTATUS[0]}"
 
-      - name: Report test failures
-        if: failure()
+      - name: Report test results
+        if: ${{ !cancelled() }}
         run: node scripts/ci-report.js Windows error core-tests.log app-tests.log
 
       - name: Build the installers (EXE setup, MSI, portable EXE)
+        id: build
         if: ${{ !cancelled() && (success() || needs.check.outputs.publish != 'true') }}
-        run: npm run dist
+        run: npm run dist 2>&1 | tee build.log; exit "${PIPESTATUS[0]}"
+
+      - name: Report a failed build
+        if: ${{ !cancelled() && steps.build.outcome == 'failure' }}
+        run: node scripts/ci-report.js "Windows build" tail build.log
 
       - name: Keep the installers as a workflow artifact
         if: ${{ !cancelled() && (success() || needs.check.outputs.publish != 'true') }}
@@ -182,11 +191,12 @@ jobs:
         timeout-minutes: 50
         run: npm test 2>&1 | tee app-tests.log; exit "${PIPESTATUS[0]}"
 
-      - name: Report test failures
-        if: steps.core.outcome == 'failure' || steps.app.outcome == 'failure'
+      - name: Report test results
+        if: ${{ !cancelled() }}
         run: node scripts/ci-report.js macOS warning core-tests.log app-tests.log
 
       - name: Build the disk images (Apple silicon and Intel)
+        id: build
         if: ${{ !cancelled() && (success() || needs.check.outputs.publish != 'true') }}
         env:
           CSC_LINK: ${{ secrets.MAC_CERTIFICATE }}
@@ -195,16 +205,19 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
+          set -o pipefail
           if [ -n "$CSC_LINK" ]; then
             # Developer ID signature and notarization by Apple.
-            npm run build
-            node scripts/mac-helper.js
-            npx electron-builder --mac --publish never
+            { npm run build && node scripts/mac-helper.js && npx electron-builder --mac --publish never; } 2>&1 | tee build.log
           else
             # Ad hoc signature (also for pull requests, where electron-builder would otherwise not sign at all).
             unset CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID
-            CSC_FOR_PULL_REQUEST=true npm run dist:mac
+            CSC_FOR_PULL_REQUEST=true npm run dist:mac 2>&1 | tee build.log
           fi
+
+      - name: Report a failed build
+        if: ${{ !cancelled() && steps.build.outcome == 'failure' }}
+        run: node scripts/ci-report.js "macOS build" tail build.log
 
       - name: Check the built apps
         if: ${{ !cancelled() && (success() || needs.check.outputs.publish != 'true') }}

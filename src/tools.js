@@ -1,5 +1,5 @@
 // All tools: definition of the groups and their implementation.
-import { h, $, icon, ibtn, toast, errToast, busy, formDialog, messageBox, hexToRgb, rgbToHex, cssColor, fileBase, canvasBytes, normalizeImage, toBase64, fmtSize, contextMenu } from './util.js';
+import { h, $, icon, ibtn, toast, errToast, busy, formDialog, messageBox, hexToRgb, rgbToHex, cssColor, fileBase, canvasBytes, normalizeImage, toBase64, fmtSize, contextMenu, inFolder } from './util.js';
 import * as ops from './pdf/ops.js';
 import { loadForEdit, saveDoc } from './pdf/ops.js';
 import { writeAnnotations, flattenAnnotationsInDoc, newId } from './pdf/annots.js';
@@ -334,7 +334,7 @@ export class Tools {
     const bytes = await this.doc.buildOutput({ noEncrypt: true });
     await busy('Splitting document', async (p) => {
       for (let i = 0; i < ranges.length; i++) {
-        await window.dp.writeFile(`${dir}\\${base}_Part${String(i + 1).padStart(String(ranges.length).length, '0')}.pdf`, await ops.extractPages(bytes, ranges[i]));
+        await window.dp.writeFile(inFolder(dir, `${base}_Part${String(i + 1).padStart(String(ranges.length).length, '0')}.pdf`), await ops.extractPages(bytes, ranges[i]));
         p((i + 1) / ranges.length, `File ${i + 1} of ${ranges.length}`);
       }
     });
@@ -874,7 +874,7 @@ export class Tools {
       const dir = await window.dp.folderDialog('Choose destination folder');
       if (!dir) return;
       const ext = fmt === 'png' ? 'png' : 'jpg';
-      await busy('Creating images', (p) => conv.pageImages(this.app, { dpi: +r.dpi, mime: `image/${fmt}` }, (i, bytes) => window.dp.writeFile(`${dir}\\${base}_P${String(i + 1).padStart(3, '0')}.${ext}`, bytes), p));
+      await busy('Creating images', (p) => conv.pageImages(this.app, { dpi: +r.dpi, mime: `image/${fmt}` }, (i, bytes) => window.dp.writeFile(inFolder(dir, `${base}_P${String(i + 1).padStart(3, '0')}.${ext}`), bytes), p));
       toast('Images saved', 'ok'); window.dp.openPath(dir);
       return;
     }

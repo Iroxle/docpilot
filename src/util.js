@@ -16,6 +16,9 @@ const MAC_TEXT = [
 ];
 export const macText = (s) => (MAC && typeof s === 'string' ? MAC_TEXT.reduce((t, [re, to]) => t.replace(re, to), s) : s);
 
+/** A file in a folder chosen in a dialog, with the system's separator (\\ on Windows, / on a Mac). */
+export const inFolder = (dir, name) => (dir.includes('\\') ? `${dir}\\${name}` : `${dir}/${name}`);
+
 export function h(tag, props, ...kids) {
   const e = document.createElement(tag);
   for (const [k, v] of Object.entries(props || {})) {

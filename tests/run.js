@@ -749,13 +749,14 @@ async function makeFixture(name, pages = 4) {
     await page.evaluate(() => window.__app.overlay.setTool('crop')); await drag(0, [40, 800], [560, 40]);
     await page.waitForSelector('.scrim'); await page.click('.scrim .btn.primary'); await wait(600);
     await page.evaluate(async () => { await window.__app.tools.insertBlankAt(1); }); await wait(300);
-    await page.evaluate(async () => { await window.__app.tools.extract([0]); }).catch(() => {});
+    // "Extract pages" asks first (copy only or also delete): confirm the dialog.
+    await page.evaluate(() => { window.__t = window.__app.tools.extract([0]); }); await dialog({}); await page.evaluate(() => window.__t).catch(() => {});
     await closeAll();
     await openFile(file('a.pdf'));
     await app.evaluate(({ dialog: d }, x) => { d.showOpenDialog = async () => ({ canceled: false, filePaths: [x] }); }, work);
     await page.evaluate(() => { window.__t = window.__app.tools.split(); }); await dialog({ count: 2 }); await page.evaluate(() => window.__t); await idle(); await wait(200);
-    assert.ok(fs.existsSync(file('a_Teil1.pdf')) && fs.existsSync(file('a_Teil2.pdf')));
-    assert.equal((await open(fs.readFileSync(file('a_Teil2.pdf')))).numPages, 2);
+    assert.ok(fs.existsSync(file('a_Part1.pdf')) && fs.existsSync(file('a_Part2.pdf')));
+    assert.equal((await open(fs.readFileSync(file('a_Part2.pdf')))).numPages, 2);
     await setDialogs({ save: file('a-pdfa.pdf') });
     await page.evaluate(() => { window.__t = window.__app.tools.pdfa(); }); await page.waitForSelector('.scrim'); await page.click('.scrim .btn.primary'); await page.evaluate(() => window.__t); await wait(200);
     assert.ok(fs.readFileSync(file('a-pdfa.pdf')).includes('pdfaid') || (await open(fs.readFileSync(file('a-pdfa.pdf')))).numPages === 4);
@@ -1370,7 +1371,7 @@ async function makeFixture(name, pages = 4) {
     }
     await idle(); await wait(300);
     const t = (await page.evaluate(async () => (await window.__app.doc.pageText(0)).items.map((x) => x.str).join(' '))).replace(/\s+/g, ' ');
-    for (const w of ['Geprüft', 'Beträge.', 'Schriftgrösse:', '±4 %', 'core tests', '1480.00', 'gespeicherten', 'Briefkopf']) assert.ok(t.includes(w), `"${w}" recognized: ${t}`);
+    for (const w of ['Geprüft', 'Beträge.', 'Schriftgrösse:', '±4 %', 'Kern-Tests', '1480.00', 'gespeicherten', 'Briefkopf']) assert.ok(t.includes(w), `"${w}" recognized: ${t}`);
     assert.equal((t.match(/•/g) || []).length, 3, `three bullet points: ${t}`);
     assert.equal((t.match(/◦/g) || []).length, 2, `two sub-points: ${t}`);
 
@@ -2081,8 +2082,12 @@ async function makeFixture(name, pages = 4) {
     const limit = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`Step timed out after ${STEP_TIMEOUT / 60000} minutes`)), STEP_TIMEOUT); });
     return Promise.race([p, limit]).finally(() => clearTimeout(timer));
   };
+  // Steps that cannot pass on a machine (e.g. the GitHub runners lack the Office cloud font Aptos) can be skipped
+  // with DP_SKIP_STEPS, a regular expression for step names. They are listed as SKIP and are not failures.
+  const skip = process.env.DP_SKIP_STEPS ? new RegExp(process.env.DP_SKIP_STEPS) : null;
   for (const [name, fn] of steps) {
     if (only && !only.test(name)) { if (!/Home|Open via/.test(name)) continue; }
+    if (skip && skip.test(name)) { console.log(`  SKIP   ${name}`); continue; }
     const before = errors.length;
     try {
       await limited(fn());
