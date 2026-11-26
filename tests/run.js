@@ -465,7 +465,9 @@ async function invoiceFixture(name) {
     assert.ok(badges.every((b) => /Valid/.test(b)), `both signatures valid: ${badges}`);
     assert.match(await page.$eval('.cm[data-sig="0"] [data-changes]', (e) => e.textContent), /permitted: signatures/);
     // A comment on the signed document is saved by appending as well (Save to the same file).
-    await page.evaluate(() => window.__app.overlay.add({ type: 'note', page: 0, rect: [500, 700, 520, 720], contents: 'Checked', color: [1, 0.8, 0] }));
+    // Changing a signed document asks first ("Edit anyway?"): confirm with "Edit".
+    await page.evaluate(() => { window.__t = window.__app.overlay.add({ type: 'note', page: 0, rect: [500, 700, 520, 720], contents: 'Checked', color: [1, 0.8, 0] }); });
+    await page.waitForSelector('.scrim'); await page.click('.scrim button:has-text("Edit")'); await page.evaluate(() => window.__t);
     await page.evaluate(() => window.__app.save()); await idle();
     await page.waitForFunction(() => !window.__app.doc.dirty, null, { timeout: 30000 }); await wait(300);
     const third = fs.readFileSync(file('a-sig2.pdf'));
