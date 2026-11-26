@@ -29,7 +29,6 @@ This file is generated with `npm run notices`.
 | [node-forge](https://github.com/digitalbazaar/forge) | 1.4.3 | (BSD-3-Clause OR GPL-2.0) |
 | [node-html-better-parser](https://github.com/Sharcoux/node-html-parser) | 1.5.9 | MIT |
 | [option](https://github.com/mwilliamson/node-options) | 0.2.4 | BSD-2-Clause |
-| [PdfCraft](https://github.com/storytold/pdfcraft) | (ported parts) | MIT |
 | [pdfjs-dist](https://github.com/mozilla/pdf.js) | 6.5.438 | Apache-2.0 |
 | [pptxgenjs](https://github.com/gitbrent/PptxGenJS) | 4.0.1 | MIT |
 | [regenerator-runtime](https://github.com/facebook/regenerator/tree/main/packages/runtime) | 0.13.11 | MIT |
