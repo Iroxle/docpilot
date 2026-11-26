@@ -1,10 +1,6 @@
 <p align="center">
-  <img src="assets/logo.svg" alt="DocPilot" height="72">
+  <img src="docs/hero.png" alt="DocPilot: edit, comment and sign PDFs. Everything stays on your computer. A PDF editor for Windows and Mac with a familiar, easy-to-use layout. Shown: a sample magazine in two-page view, and the same magazine with comments in the dark appearance." width="100%">
 </p>
-
-<h1 align="center">DocPilot</h1>
-
-<p align="center">View, edit, comment on and sign PDFs.<br>A PDF editor for Windows and Mac with a familiar, easy-to-use layout.</p>
 
 <p align="center">
   <a href="https://github.com/Iroxle/docpilot/releases/latest"><img alt="Latest version" src="https://img.shields.io/github/v/release/Iroxle/docpilot?style=for-the-badge&label=version&color=0e7c86"></a>
@@ -12,10 +8,6 @@
   <img alt="Built with Electron" src="https://img.shields.io/badge/Electron-47848f?style=for-the-badge&logo=electron&logoColor=white">
   <img alt="Offline OCR" src="https://img.shields.io/badge/OCR-offline-2e7d32?style=for-the-badge">
   <a href="https://github.com/Iroxle/docpilot/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/Iroxle/docpilot/total?style=for-the-badge&color=555"></a>
-</p>
-
-<p align="center">
-  <img src="docs/screenshots/comments.png" alt="DocPilot with a project report open: highlight, underline, sticky note and approval stamp, with the comment list on the right" width="900">
 </p>
 
 <table width="100%">
@@ -122,33 +114,33 @@ The complete list, including all known limitations, is in **[FEATURES.md](FEATUR
 <table>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/screenshots/home.png" alt="Home page with recommended tools and recently opened files">
-      <p align="center"><b>Home</b><br><sub>Recommended tools and recently opened files at a glance.</sub></p>
+      <img src="docs/screenshots/read.png" alt="Two-page view of a sample magazine: an illustrated cover and the table of contents, with all tools listed on the left">
+      <p align="center"><b>Read</b><br><sub>One or two pages side by side, thumbnails, bookmarks and full screen.</sub></p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/screenshots/edit.png" alt="Editing a paragraph directly on the page with font, size and color controls">
-      <p align="center"><b>Edit PDF</b><br><sub>Change text directly on the page, in the original layout.</sub></p>
+      <img src="docs/screenshots/comment.png" alt="Dark appearance: a magazine page with a highlight, an underline, an ellipse and a sticky note, and the comment list with replies and status on the right">
+      <p align="center"><b>Comment</b><br><sub>Highlights, notes and shapes, with replies and status. Light, dark or the same as the system.</sub></p>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/screenshots/organize.png" alt="Organize pages view with page thumbnails and actions to rotate, delete, insert and split">
-      <p align="center"><b>Organize pages</b><br><sub>Reorder, rotate, insert, replace and split pages.</sub></p>
+      <img src="docs/screenshots/edit.png" alt="Editing a paragraph directly on the page, with font, size and color controls above it">
+      <p align="center"><b>Edit PDF</b><br><sub>Change text directly on the page, in the original layout.</sub></p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/screenshots/preferences.png" alt="Preferences dialog showing the Scan and OCR settings">
-      <p align="center"><b>Preferences</b><br><sub>Clearly structured, with offline text recognition.</sub></p>
+      <img src="docs/screenshots/sign.png" alt="A subscription form with filled-in fields, a check mark and a handwritten signature">
+      <p align="center"><b>Fill and sign</b><br><sub>Form fields are detected automatically, then filled in and signed.</sub></p>
     </td>
   </tr>
   <tr>
     <td colspan="2" valign="top">
-      <img src="docs/screenshots/dark.png" alt="Dark appearance with the find and replace bar open above a document">
-      <p align="center"><b>Dark appearance and find and replace</b><br><sub>Light, dark or the same as the system; pages stay white like paper. Replace text in the whole document.</sub></p>
+      <img src="docs/screenshots/organize.png" alt="Organize pages: large thumbnails of all six magazine pages with buttons to rotate, delete, insert, replace and split">
+      <p align="center"><b>Organize pages</b><br><sub>Reorder, rotate, insert, replace and split pages.</sub></p>
     </td>
   </tr>
 </table>
 
-<p align="center"><sub>The document shown is a fictional sample report.</sub></p>
+<p align="center"><sub>The document shown is <b>Lumen &amp; Land</b>, a fictional sample magazine. <a href="docs/sample/Lumen-and-Land.pdf">Download the sample PDF</a> and try DocPilot with it.</sub></p>
 
 ## What to download
 
