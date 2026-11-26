@@ -1,7 +1,9 @@
 // Digital signatures according to PKCS#7 (adbe.pkcs7.detached) with PFX/P12 files.
-import { PDFName, PDFArray, PDFHexString, PDFString, PDFNumber, PDFInvalidObject, StandardFonts, rgb } from '@cantoo/pdf-lib';
+import { PDFName, PDFArray, PDFDict, PDFHexString, PDFString, PDFNumber, PDFInvalidObject, StandardFonts, rgb } from '@cantoo/pdf-lib';
 import forge from 'node-forge';
-import { loadForEdit, wrapText, sanitizeFor } from './ops.js';
+import { loadForEdit, wrapText, sanitizeFor, fieldKind, addAnnotTo } from './ops.js';
+import { appendUpdate } from './incremental.js';
+import { classifyChanges, docMdpLevel } from './sigchanges.js';
 
 const SIG_HEX_LEN = 32768;
 
@@ -61,7 +63,12 @@ function findLast(bytes, needle) {
   return -1;
 }
 
-/** o: {p12, password, reason, location, contact, visible:{page, rect, image, mime}} */
+/**
+ * Signs a PDF; the signature is appended as an incremental update, so earlier signatures stay valid.
+ * o: {p12, password, reason, location, contact, visible:{page, rect, image, mime}, certify: 1|2|3}
+ * certify makes it a certification signature (first signature only): 1 no changes allowed, 2 form fill and
+ * signing, 3 also comments.
+ */
 export async function signPdf(bytes, o) {
   const id = readP12(o.p12, o.password);
   const now = new Date();
@@ -81,12 +88,18 @@ export async function signPdf(bytes, o) {
   if (o.reason) sig.set(PDFName.of('Reason'), PDFHexString.fromText(o.reason));
   if (o.location) sig.set(PDFName.of('Location'), PDFHexString.fromText(o.location));
   if (o.contact) sig.set(PDFName.of('ContactInfo'), PDFHexString.fromText(o.contact));
+  const signedBefore = form.getFields().some((f) => fieldKind(f) === 'PDFSignature' && f.acroField.dict.get(PDFName.of('V')));
+  if (o.certify) {
+    if (signedBefore) throw new Error('Only the first signature of a document can certify it.');
+    sig.set(PDFName.of('Reference'), ctx.obj([{ Type: 'SigRef', TransformMethod: 'DocMDP', TransformParams: { Type: 'TransformParams', P: o.certify, V: '1.2' } }]));
+  }
   const sigRef = ctx.register(sig);
+  if (o.certify) doc.catalog.set(PDFName.of('Perms'), ctx.obj({ DocMDP: sigRef }));
 
   const pageIdx = o.visible ? o.visible.page : 0;
   const page = doc.getPage(pageIdx);
   const rect = o.visible ? o.visible.rect : [0, 0, 0, 0];
-  const existing = form.getFields().filter((f) => f.constructor.name === 'PDFSignature').length;
+  const existing = form.getFields().filter((f) => fieldKind(f) === 'PDFSignature').length;
   const fieldName = o.fieldName || `Signature${existing + 1}`;
   const widget = ctx.obj({
     Type: 'Annot', Subtype: 'Widget', FT: 'Sig', Rect: rect, V: sigRef, T: PDFHexString.fromText(fieldName), F: 132, P: page.ref,
@@ -115,12 +128,17 @@ export async function signPdf(bytes, o) {
     widget.set(PDFName.of('AP'), ctx.obj({ N: ctx.register(ap) }));
   }
   const widgetRef = ctx.register(widget);
-  page.node.addAnnot(widgetRef);
+  addAnnotTo(page, widgetRef);
   form.acroForm.addField(widgetRef, []);
   form.acroForm.dict.set(PDFName.of('SigFlags'), PDFNumber.of(3));
   void rgb; void PDFArray;
 
-  const saved = await doc.save({ useObjectStreams: false, updateFieldAppearances: false, objectsPerTick: 2000 });
+  // Appended to the file as it is: earlier signatures keep covering exactly what they signed.
+  let saved = await appendUpdate(bytes, doc);
+  if (!saved) {
+    if (signedBefore) throw new Error('The document cannot be signed again without invalidating its signature.');
+    saved = await doc.save({ useObjectStreams: false, updateFieldAppearances: false, objectsPerTick: 2000 });
+  }
   // Find ByteRange and Contents and insert the signature.
   const contentsPos = findLast(saved, `<${'0'.repeat(SIG_HEX_LEN)}>`);
   const brPos = findLast(saved, `[0 ${BR} ${BR} ${BR}]`);
@@ -208,4 +226,26 @@ export function verifySignatures(bytes) {
     out.push(entry);
   }
   return out;
+}
+
+/**
+ * The signatures with what changed after each of them: verifySignatures plus {certify (DocMDP level or null),
+ * changes: {kinds, allowed, disallowed} (null when the signature covers the whole file)}.
+ */
+export async function signatureDetails(bytes) {
+  const list = verifySignatures(bytes);
+  let doc = null;
+  try { doc = await loadForEdit(bytes); } catch { doc = null; }
+  const perms = doc && doc.catalog.lookupMaybe(PDFName.of('Perms'), PDFDict);
+  const mdp = perms && perms.get(PDFName.of('DocMDP'));
+  const sigs = [];
+  if (doc) for (const [ref, obj] of doc.context.enumerateIndirectObjects()) if (obj instanceof PDFDict && obj.get(PDFName.of('ByteRange'))) sigs.push([ref, obj]);
+  for (const e of list) {
+    const match = sigs.find(([, d]) => { const br = d.lookup(PDFName.of('ByteRange')); return br instanceof PDFArray && br.asArray().every((n, i) => n.asNumber?.() === e.byteRange[i]); });
+    e.certify = match ? docMdpLevel(doc.context, match[1]) : null;
+    if (match && mdp && mdp.tag !== match[0].tag) e.certify = null;
+    const end = e.byteRange[2] + e.byteRange[3];
+    e.changes = end >= bytes.length - 2 ? null : await classifyChanges(bytes, end, e.certify);
+  }
+  return list;
 }

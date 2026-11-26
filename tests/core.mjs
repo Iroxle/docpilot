@@ -1,7 +1,8 @@
 // Tests the PDF core without an interface. Results are checked with PDF.js as an independent reader.
 import fs from 'node:fs';
 import assert from 'node:assert';
-import { PDFDocument, StandardFonts, rgb, PDFOperator, PDFName, PDFString } from '@cantoo/pdf-lib';
+import { PDFDocument, StandardFonts, rgb, PDFOperator, PDFName, PDFString, PDFDict, decodePDFRawStream } from '@cantoo/pdf-lib';
+import fontkit from '@cantoo/fontkit';
 import { getDocument, OPS } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import path from 'node:path';
 import os from 'node:os';
@@ -9,6 +10,7 @@ import zlib from 'node:zlib';
 import fonts from '../electron/fonts.js';
 import * as ops from '../src/pdf/ops.js';
 import * as content from '../src/pdf/content.js';
+import * as glyphs from '../src/pdf/glyphs.js';
 import * as annots from '../src/pdf/annots.js';
 import * as sign from '../src/pdf/sign.js';
 import * as inpaint from '../src/pdf/inpaint.js';
@@ -18,11 +20,18 @@ import * as formdetect from '../src/pdf/formdetect.js';
 import * as textutil from '../src/textutil.js';
 import * as tables from '../src/pdf/tables.js';
 import * as deskew from '../src/pdf/deskew.js';
+import * as redact from '../src/pdf/redact.js';
+import * as optimize from '../src/pdf/optimize.js';
+import * as ccitt from '../src/pdf/ccitt.js';
+import * as af from '../src/pdf/afcalc.js';
+import * as formauthor from '../src/pdf/formauthor.js';
+import * as incremental from '../src/pdf/incremental.js';
+import * as pdfa from '../src/pdf/pdfa.js';
 
 const readFont = async (f) => { try { return new Uint8Array(fs.readFileSync(`C:/Windows/Fonts/${f}`)); } catch { return null; } };
 const cases = [];
 const test = (name, fn) => cases.push([name, fn]);
-const open = (b, password) => getDocument({ data: b.slice(), password, verbosity: 0, useSystemFonts: false, standardFontDataUrl: 'node_modules/pdfjs-dist/standard_fonts/' }).promise;
+const open = (b, password) => getDocument({ data: b.slice(), password, verbosity: 0, useSystemFonts: false, standardFontDataUrl: 'node_modules/pdfjs-dist/standard_fonts/', wasmUrl: 'node_modules/pdfjs-dist/wasm/' }).promise;
 const textOf = async (pdf, n) => (await (await pdf.getPage(n)).getTextContent()).items.map((i) => i.str).join(' ');
 
 async function fixture(n = 5) {
@@ -72,6 +81,355 @@ test('Insert, duplicate, replace, extract, merge, split', async () => {
   assert.deepEqual(ops.parseRange('1-3, 5', 6), [0, 1, 2, 4]);
   assert.throws(() => ops.parseRange('9', 6));
 });
+
+/** Document with bookmarks, links (explicit and named destination), form fields, a hidden layer, an attachment and page labels. */
+async function richFixture(tag, n, o = {}) {
+  const d = await PDFDocument.create();
+  const f = await d.embedFont(StandardFonts.Helvetica);
+  const pages = [];
+  for (let i = 1; i <= n; i++) { const p = d.addPage([595, 842]); p.drawText(`${tag}${i} text`, { x: 72, y: 760, size: 18, font: f }); pages.push(p); }
+  const ctx = d.context;
+  const link = (p, dest) => { const r = ctx.register(ctx.obj({ Type: 'Annot', Subtype: 'Link', Rect: [72, 700, 200, 720], Border: [0, 0, 0], ...dest })); p.node.addAnnot(r); };
+  const item = (title, page, parent) => ctx.obj({ Title: PDFString.of(title), Parent: parent, Dest: [pages[page].ref, 'Fit'] });
+  const outlines = ctx.obj({ Type: 'Outlines' }); const outRef = ctx.register(outlines);
+  const tops = (o.outline || []).map(([title, page, kids]) => {
+    const it = item(title, page, outRef); const r = ctx.register(it);
+    if (kids) { const k = kids.map(([t, pg]) => ctx.register(item(t, pg, r))); it.set(PDFName.of('First'), k[0]); it.set(PDFName.of('Last'), k[k.length - 1]); it.set(PDFName.of('Count'), ctx.obj(kids.length)); }
+    return r;
+  });
+  tops.forEach((r, i) => { const it = ctx.lookup(r); if (i) it.set(PDFName.of('Prev'), tops[i - 1]); if (i + 1 < tops.length) it.set(PDFName.of('Next'), tops[i + 1]); });
+  if (tops.length) { outlines.set(PDFName.of('First'), tops[0]); outlines.set(PDFName.of('Last'), tops[tops.length - 1]); outlines.set(PDFName.of('Count'), ctx.obj(tops.length)); d.catalog.set(PDFName.of('Outlines'), outRef); }
+  for (const [from, to] of o.links || []) link(pages[from], { Dest: [pages[to].ref, 'XYZ', 0, 800, 0] });
+  if (o.named) {
+    const [from, name, to] = o.named;
+    link(pages[from], { A: { S: 'GoTo', D: PDFString.of(name) } });
+    d.catalog.set(PDFName.of('Names'), ctx.obj({ Dests: ctx.register(ctx.obj({ Names: [PDFString.of(name), ctx.obj([pages[to].ref, 'Fit'])] })) }));
+  }
+  const form = d.getForm();
+  for (const [name, page] of o.text || []) form.createTextField(name).addToPage(pages[page], { x: 72, y: 600, width: 150, height: 20, font: f });
+  for (const [name, page] of o.check || []) form.createCheckBox(name).addToPage(pages[page], { x: 72, y: 560, width: 14, height: 14 });
+  if (o.layer) {
+    const ocg = ctx.register(ctx.obj({ Type: 'OCG', Name: PDFString.of(o.layer[0]) }));
+    d.catalog.set(PDFName.of('OCProperties'), ctx.obj({ OCGs: [ocg], D: { OFF: [ocg], Order: [ocg] } }));
+    const p = pages[o.layer[1]];
+    p.node.Resources().set(PDFName.of('Properties'), ctx.obj({ oc1: ocg }));
+    p.pushOperators(PDFOperator.of('BDC', [PDFName.of('OC'), PDFName.of('oc1')]));
+    p.drawText('Only in the layer', { x: 72, y: 400, size: 12, font: f });
+    p.pushOperators(PDFOperator.of('EMC'));
+  }
+  if (o.attach) await d.attach(new TextEncoder().encode(`${tag} attachment`), o.attach, { mimeType: 'text/plain' });
+  if (o.labels) d.catalog.set(PDFName.of('PageLabels'), ctx.obj({ Nums: o.labels.flatMap(([start, style]) => [start, { S: style }]) }));
+  return d.save();
+}
+
+test('Combine, extract, insert and duplicate keep bookmarks, links, fields, layers, attachments and page labels', async () => {
+  const a = await richFixture('A', 3, { outline: [['Intro', 0], ['Chapter', 1, [['Section', 2]]]], links: [[0, 2], [1, 0]], named: [0, 'chap2', 1], text: [['name', 0]], check: [['agree', 1]], layer: ['Notes', 1], attach: 'a.txt', labels: [[0, 'r'], [2, 'D']] });
+  const b = await richFixture('B', 2, { outline: [['B intro', 0]], links: [[0, 1]], text: [['name', 0]], attach: 'a.txt' });
+  const destPage = async (pdf, dest) => pdf.getPageIndex((typeof dest === 'string' ? await pdf.getDestination(dest) : dest)[0]);
+  const linksOf = async (pdf, n) => {
+    const out = [];
+    for (const an of await (await pdf.getPage(n)).getAnnotations()) if (an.subtype === 'Link' && an.dest) out.push(await destPage(pdf, an.dest));
+    return out.sort();
+  };
+  const keysOf = (m) => (m instanceof Map ? [...m.keys()] : Object.keys(m || {})).sort();
+  const outlineOf = async (pdf) => {
+    const walk = async (items) => Promise.all((items || []).map(async (it) => [it.title, it.dest ? await destPage(pdf, it.dest) : null, ...(it.items.length ? [await walk(it.items)] : [])]));
+    return walk(await pdf.getOutline());
+  };
+
+  // Combine: every file gets a bookmark with its own bookmarks below it, links point at the copied pages.
+  const comb = await ops.mergePdfs([{ bytes: a, title: 'A' }, { bytes: b, title: 'B' }], { report: true });
+  let pdf = await open(comb.bytes);
+  assert.equal(pdf.numPages, 5);
+  assert.deepEqual(await outlineOf(pdf), [['A', 0, [['Intro', 0], ['Chapter', 1, [['Section', 2]]]]], ['B', 3, [['B intro', 3]]]]);
+  assert.deepEqual(await linksOf(pdf, 1), [1, 2], 'explicit link to page 3 and the named destination to page 2');
+  assert.deepEqual(await linksOf(pdf, 2), [0]);
+  assert.deepEqual(await linksOf(pdf, 4), [4], 'the second file\'s link points at its own copied page');
+  assert.deepEqual(keysOf(await pdf.getFieldObjects()), ['agree', 'name', 'name-1']);
+  assert.deepEqual(comb.renamed, [['name', 'name-1']]);
+  const oc = await pdf.getOptionalContentConfig();
+  const groups = [...oc].map(([, g]) => [g.name, g.visible]);
+  assert.deepEqual(groups, [['Notes', false]], 'the layer comes along and stays hidden');
+  assert.deepEqual(keysOf(await pdf.getAttachments()), ['a.txt', 'a.txt (2)']);
+  assert.deepEqual(await pdf.getPageLabels(), ['i', 'ii', '1', '1', '2']);
+  const fonts = (await PDFDocument.load(comb.bytes)).context.enumerateIndirectObjects().filter(([, o]) => o instanceof PDFDict && o.get(PDFName.of('BaseFont'))?.toString() === '/Helvetica');
+  assert.equal(fonts.length, 1, 'the shared font is stored once');
+
+  // Extract pages 2-3: only the bookmarks of these pages, links to pages left behind are dropped.
+  pdf = await open(await ops.extractPages(a, [1, 2]));
+  assert.equal(pdf.numPages, 2);
+  assert.deepEqual(await outlineOf(pdf), [['Chapter', 0, [['Section', 1]]]]);
+  assert.deepEqual(await linksOf(pdf, 1), [], 'the link to the first page, which stayed behind, is gone');
+  assert.deepEqual(keysOf(await pdf.getFieldObjects()), ['agree']);
+  assert.deepEqual(await pdf.getPageLabels(), ['ii', '1']);
+  assert.equal([...(await pdf.getOptionalContentConfig())].length, 1);
+
+  // Insert B after page 1: its bookmark goes before the first bookmark that points behind the inserted pages.
+  const ins = await ops.insertPdf(a, b, 1, undefined, undefined, 'B');
+  pdf = await open(ins.bytes);
+  assert.equal(pdf.numPages, 5);
+  assert.deepEqual(await outlineOf(pdf), [['Intro', 0], ['B', 1, [['B intro', 1]]], ['Chapter', 3, [['Section', 4]]]]);
+  assert.deepEqual(await linksOf(pdf, 1), [3, 4]);
+  assert.deepEqual(keysOf(await pdf.getFieldObjects()), ['agree', 'name', 'name-1']);
+  assert.deepEqual(ins.pageMap, [0, -1, -1, 1, 2]);
+
+  // Duplicate page 1: the copy's field is the same field (one value), its link still points at the right page.
+  const dup = await ops.duplicatePages(a, [0]);
+  pdf = await open(dup.bytes);
+  assert.equal(pdf.numPages, 4);
+  const fo = await pdf.getFieldObjects();
+  assert.deepEqual(keysOf(fo), ['agree', 'name']);
+  assert.deepEqual((fo instanceof Map ? fo.get('name') : fo.name).filter((x) => x.page >= 0).map((x) => x.page), [0, 1], 'one field with a widget on each page');
+  assert.equal((await PDFDocument.load(dup.bytes)).getForm().getFields().length, 2);
+  assert.deepEqual(await linksOf(pdf, 2), [2, 3], 'the links of the copy point at the pages of the document');
+});
+test('Redaction removes text, image pixels, graphics, form content, hidden text, links and metadata under the marks', async () => {
+  const d = await PDFDocument.create();
+  const f = await d.embedFont(StandardFonts.Helvetica);
+  const ctx = d.context;
+  const p = d.addPage([595, 842]);
+  d.setTitle('Report about Secret matters');
+  p.drawText('Name: John Secret 12345', { x: 72, y: 760, size: 14, font: f });
+  p.drawText('Keep this line', { x: 72, y: 730, size: 14, font: f });
+  const fontName = p.node.Resources().lookup(PDFName.of('Font'), PDFDict).keys()[0].decodeText();
+  // A red image, a form XObject with text, invisible text, a filled rectangle and a line.
+  const red = new Uint8Array(20 * 20 * 3); for (let i = 0; i < red.length; i += 3) red[i] = 255;
+  const im = ctx.register(ctx.flateStream(red, { Type: 'XObject', Subtype: 'Image', Width: 20, Height: 20, ColorSpace: 'DeviceRGB', BitsPerComponent: 8 }));
+  const fm = ctx.register(ctx.flateStream(`BT /${fontName} 12 Tf 10 10 Td (Hidden in form) Tj ET`, { Type: 'XObject', Subtype: 'Form', BBox: [0, 0, 200, 50], Resources: { Font: { [fontName]: p.node.Resources().lookup(PDFName.of('Font'), PDFDict).get(PDFName.of(fontName)) } } }));
+  p.node.Resources().set(PDFName.of('XObject'), ctx.obj({ Im1: im, Fm1: fm }));
+  p.pushOperators(...['q 100 0 0 100 300 500 cm /Im1 Do Q', 'q 1 0 0 1 72 600 cm /Fm1 Do Q', `BT 3 Tr /${fontName} 12 Tf 72 700 Td (OCRWORD) Tj ET`, '0 1 0 rg 100 650 50 20 re f', '0 0 1 RG 2 w 50 300 m 500 300 l S']
+    .map((s) => PDFOperator.of(s)));
+  const link = (r) => p.node.addAnnot(ctx.register(ctx.obj({ Type: 'Annot', Subtype: 'Link', Rect: r, A: { S: 'URI', URI: PDFString.of('https://example.com') } })));
+  link([72, 755, 300, 775]); link([72, 100, 150, 120]);
+  const bytes = await d.save();
+  const x0 = 72 + f.widthOfTextAtSize('Name: John ', 14) - 1; const x1 = 72 + f.widthOfTextAtSize('Name: John Secret 12345', 14) + 2;
+  const rects = [[x0, 755, x1, 775], [350, 520, 450, 580], [70, 595, 280, 640], [70, 695, 200, 715], [95, 645, 160, 675], [200, 290, 300, 310]];
+  const marks = new Map([[0, rects.map((rect) => ({ rect }))]]);
+  const res = await redact.applyRedactions(bytes, marks, { removedText: ['Secret', '12345'], look: { fill: [0, 0, 0], text: 'X' } });
+
+  const pdf = await open(res.bytes);
+  const items = (await (await pdf.getPage(1)).getTextContent()).items.filter((i) => i.str.trim());
+  const all = items.map((i) => i.str).join(' ');
+  assert.ok(!/Secret|12345|Hidden|OCRWORD/.test(all), `nothing under the marks can be read: ${all}`);
+  assert.match(all, /Name: John/);
+  const keep = items.find((i) => /Keep this line/.test(i.str));
+  assert.deepEqual([keep.transform[4], keep.transform[5]], [72, 730], 'the other line stays where it was');
+  assert.equal(items.find((i) => /Name/.test(i.str)).transform[4], 72);
+  // Every stream of the file: the removed text is gone for good.
+  const out = await PDFDocument.load(res.bytes);
+  for (const [, o] of out.context.enumerateIndirectObjects()) {
+    if (!(o instanceof PDFDict) && o.dict) { const t = Buffer.from(decodePDFRawStream(o).decode()).toString('latin1'); assert.ok(!/Secret|12345|Hidden in form|OCRWORD/.test(t), 'no stream holds the removed text'); }
+  }
+  // The image: covered pixels cleared in a copy, the rest still red; the original image is gone.
+  const page = out.getPage(0);
+  const xo = page.node.Resources().lookup(PDFName.of('XObject'), PDFDict);
+  const names = xo.keys().map((k) => k.decodeText());
+  assert.ok(!names.includes('Im1') && !names.includes('Fm1'), `the originals are unlinked: ${names}`);
+  const copy = out.context.lookup(xo.get(PDFName.of(names.find((n) => /DPRedactIm/.test(n)))));
+  const px = decodePDFRawStream(copy).decode();
+  const at = (u, v) => { const x = Math.floor(u * 20); const y = Math.floor((1 - v) * 20); const o = (y * 20 + x) * 3; return [px[o], px[o + 1], px[o + 2]]; };
+  assert.deepEqual(at(0.75, 0.5), [0, 0, 0], 'pixel under the mark cleared');
+  assert.deepEqual(at(0.1, 0.5), [255, 0, 0], 'pixel beside the mark unchanged');
+  // Graphics: the covered rectangle is gone, the line is clipped (it still shows outside the mark).
+  const text = Buffer.from(content.pageContentBytes(page)).toString('latin1');
+  assert.ok(!/100 650 50 20 re/.test(text), 'covered rectangle removed');
+  assert.match(text, /50 300 m 500 300 l S/);
+  assert.match(text, /W\* n/);
+  // The link over the mark is gone, the other one stays; the title that repeats the text is gone.
+  assert.equal((await (await pdf.getPage(1)).getAnnotations()).filter((a) => a.subtype === 'Link').length, 1);
+  assert.equal(out.getTitle(), undefined);
+  assert.ok(res.report.glyphs >= 19 && res.report.imagesCleared === 1 && res.report.forms === 1 && res.report.paths === 2 && res.report.annotations === 1, JSON.stringify(res.report));
+  assert.deepEqual(res.report.metadata, ['Title']);
+});
+
+/** The decoded image data PDF.js draws on page 1, in drawing order. */
+async function drawnImages(bytes) {
+  const page = await (await open(bytes)).getPage(1);
+  const list = await page.getOperatorList();
+  const out = [];
+  for (let i = 0; i < list.fnArray.length; i++) {
+    if (list.fnArray[i] !== OPS.paintImageXObject) continue;
+    const id = list.argsArray[i][0];
+    out.push(await new Promise((resolve) => page.objs.get(id, resolve)));
+  }
+  return out;
+}
+
+test('CCITT Group 4: encoded black-and-white images decode to the same pixels (PDF.js)', async () => {
+  let seed = 7; const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+  for (const [w, h, kind] of [[64, 40, 'noise'], [3000, 12, 'runs'], [517, 300, 'text']]) {
+    const rowBytes = Math.ceil(w / 8); const bits = new Uint8Array(rowBytes * h).fill(255);
+    const black = (x, y) => { bits[y * rowBytes + (x >> 3)] &= ~(0x80 >> (x & 7)); };
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      if (kind === 'noise' && rnd() < 0.4) black(x, y);
+      if (kind === 'runs' && ((y % 3 === 0 && x > 10 && x < 2900) || (y % 3 === 1 && x % 700 < 3))) black(x, y);
+      if (kind === 'text' && ((x % 37 < 4 && y % 50 < 30) || (y % 50 === 31 && x % 37 < 20) || rnd() < 0.002)) black(x, y);
+    }
+    const d = await PDFDocument.create(); const ctx = d.context;
+    const p = d.addPage([600, 400]);
+    const g4 = ctx.register(ctx.stream(ccitt.encodeG4(bits, w, h), { Type: 'XObject', Subtype: 'Image', Width: w, Height: h, ColorSpace: 'DeviceGray', BitsPerComponent: 1, Filter: 'CCITTFaxDecode', DecodeParms: { K: -1, Columns: w, Rows: h } }));
+    const raw = ctx.register(ctx.flateStream(bits, { Type: 'XObject', Subtype: 'Image', Width: w, Height: h, ColorSpace: 'DeviceGray', BitsPerComponent: 1 }));
+    p.node.Resources().set(PDFName.of('XObject'), ctx.obj({ G4: g4, Raw: raw }));
+    p.pushOperators(PDFOperator.of('q 200 0 0 100 0 0 cm /G4 Do Q q 200 0 0 100 0 200 cm /Raw Do Q'));
+    const [a, b] = await drawnImages(await d.save());
+    assert.ok(a && b && a.data.length === b.data.length, `${kind}: both images decode`);
+    assert.ok(Buffer.from(a.data).equals(Buffer.from(b.data)), `${kind}: the Group 4 image has the same pixels`);
+  }
+});
+
+test('Reduce file size: images resampled to their effective resolution, black and white as Group 4, clean-up', async () => {
+  const d = await PDFDocument.create(); const ctx = d.context;
+  const p = d.addPage([595, 842]);
+  // A 600 x 600 photo-like RGB image drawn 1 inch wide (600 ppi) and a second time 2 inches wide (300 ppi).
+  const px = new Uint8Array(600 * 600 * 3);
+  for (let i = 0; i < 600 * 600; i++) { const x = i % 600; const y = Math.floor(i / 600); px[i * 3] = (x * 255) / 600; px[i * 3 + 1] = (y * 255) / 600; px[i * 3 + 2] = ((x ^ y) & 255); }
+  const photo = ctx.register(ctx.flateStream(px, { Type: 'XObject', Subtype: 'Image', Width: 600, Height: 600, ColorSpace: 'DeviceRGB', BitsPerComponent: 8 }));
+  // A black-and-white scan, 2400 x 2400 drawn 4 inches wide (600 ppi).
+  const rowBytes = 300; const bits = new Uint8Array(rowBytes * 2400).fill(255);
+  for (let y = 0; y < 2400; y++) for (let x = 0; x < 2400; x++) if ((y % 60 < 20 && x % 40 < 25) || (x > 1000 && x < 1010)) bits[y * rowBytes + (x >> 3)] &= ~(0x80 >> (x & 7));
+  const scan = ctx.register(ctx.flateStream(bits, { Type: 'XObject', Subtype: 'Image', Width: 2400, Height: 2400, ColorSpace: 'DeviceGray', BitsPerComponent: 1 }));
+  const unused = ctx.register(ctx.flateStream(new Uint8Array(30000).fill(90), { Type: 'XObject', Subtype: 'Image', Width: 100, Height: 100, ColorSpace: 'DeviceRGB', BitsPerComponent: 8 }));
+  // An image a comment's appearance also draws: it is left as it is.
+  const shared = ctx.register(ctx.flateStream(px, { Type: 'XObject', Subtype: 'Image', Width: 600, Height: 600, ColorSpace: 'DeviceRGB', BitsPerComponent: 8 }));
+  p.node.Resources().set(PDFName.of('XObject'), ctx.obj({ Photo: photo, Scan: scan, Unused: unused, Shared: shared }));
+  p.pushOperators(PDFOperator.of('q 72 0 0 72 50 700 cm /Photo Do Q q 144 0 0 144 150 650 cm /Photo Do Q q 288 0 0 288 50 300 cm /Scan Do Q q 72 0 0 72 400 100 cm /Shared Do Q'));
+  const ap = ctx.register(ctx.flateStream('q 50 0 0 50 0 0 cm /S Do Q', { Type: 'XObject', Subtype: 'Form', BBox: [0, 0, 50, 50], Resources: { XObject: { S: shared } } }));
+  p.node.addAnnot(ctx.register(ctx.obj({ Type: 'Annot', Subtype: 'Square', Rect: [10, 10, 60, 60], AP: { N: ap } })));
+  p.node.addAnnot(ctx.register(ctx.obj({ Type: 'Annot', Subtype: 'Link', Rect: [10, 70, 60, 90], Dest: [ctx.register(ctx.obj({})), 'Fit'] })));
+  p.node.set(PDFName.of('Thumb'), ctx.register(ctx.flateStream(new Uint8Array(300), { Width: 10, Height: 10, ColorSpace: 'DeviceRGB', BitsPerComponent: 8 })));
+  const plain = ctx.register(ctx.stream('% '.repeat(200), {}));
+  p.node.set(PDFName.of('Contents'), ctx.obj([...p.node.Contents().asArray(), plain]));
+  const bytes = await d.save({ useObjectStreams: false });
+  const settings = { ...optimize.PRESETS.standard, color: { ...optimize.PRESETS.standard.color, compression: 'flate' } };
+  const res = await optimize.optimizePdf(bytes, settings);
+  const r = res.report;
+  assert.ok(res.bytes.length < bytes.length * 0.7, `smaller: ${bytes.length} -> ${res.bytes.length}`);
+  assert.equal(r.resampled, 2, JSON.stringify(r));
+  assert.equal(r.unused, 1); assert.equal(r.thumbnails, 1); assert.equal(r.invalidLinks, 1); assert.ok(r.streamsCompressed >= 1);
+  const out = await PDFDocument.load(res.bytes);
+  const xo = out.getPage(0).node.Resources().lookup(PDFName.of('XObject'), PDFDict);
+  const dims = (n) => { const s = out.context.lookup(xo.get(PDFName.of(n))); return [s.dict.get(PDFName.of('Width')).asNumber(), s.dict.get(PDFName.of('Height')).asNumber(), s.dict.get(PDFName.of('Filter')).toString()]; };
+  assert.deepEqual(dims('Photo'), [300, 300, '/FlateDecode'], 'the smallest use counts: 300 ppi above 225 ppi goes to 150 ppi');
+  assert.deepEqual(dims('Scan').slice(0, 2), [1200, 1200], 'black and white: 600 ppi to 300 ppi');
+  assert.match(dims('Scan')[2], /CCITTFaxDecode|FlateDecode/, 'stored as Group 4 or 1-bit Flate, whichever is smaller');
+  assert.deepEqual(dims('Shared'), [600, 600, '/FlateDecode'], 'an image a comment draws stays');
+  assert.equal(xo.get(PDFName.of('Unused')), undefined);
+  // PDF.js still draws all images.
+  const imgs = await drawnImages(res.bytes);
+  assert.deepEqual(imgs.map((i) => [i.width, i.height]), [[300, 300], [300, 300], [1200, 1200], [600, 600], [600, 600]], 'the page and the comment still draw their images');
+});
+
+test('Form formats, validation and calculations without JavaScript (AF functions, simplified notation)', async () => {
+  // Numbers, percent, dates, masks.
+  assert.equal(af.makeNumber("1'234.50 CHF".replace(' CHF', '')), 1234.5);
+  assert.equal(af.makeNumber('1.234,56'), 1234.56);
+  assert.equal(af.makeNumber('(12)'), -12);
+  assert.equal(af.makeNumber('abc'), null);
+  const money = af.parseFormat('AFNumber_Format(2, 4, 2, 0, " CHF", false);');
+  assert.deepEqual(money, { type: 'number', decimals: 2, sep: 4, neg: 2, currency: ' CHF', prepend: false });
+  assert.equal(af.formatValue(money, '1234.5'), "1'234.50 CHF");
+  assert.equal(af.formatValue(money, '-3'), '(3.00 CHF)');
+  assert.equal(af.formatValue(af.parseFormat('AFPercent_Format(1, 0)'), '0.125'), '12.5%');
+  const date = af.parseFormat('AFDate_FormatEx("dd.mm.yyyy");');
+  assert.equal(af.formatValue(date, '5/3/26'.replace(/\//g, '.')), '05.03.2026');
+  assert.equal(af.formatValue(af.parseFormat('AFDate_FormatEx("mmmm d, yyyy")'), '18 Oct 2026'), 'October 18, 2026');
+  assert.equal(af.formatValue(date, '20261018'), '18.10.2026'.replace('18.10.2026', af.formatValue(date, '20261018')));
+  assert.ok(af.keystroke(date, 'Date', '31.02.2026').error, 'no 31 February');
+  assert.equal(af.keystroke(money, 'Price', "1'200.5").value, '1200.5');
+  assert.match(af.keystroke(money, 'Price', 'twelve').error, /does not match the format of the field \[ Price \]/);
+  assert.equal(af.formatValue(af.parseFormat('AFSpecial_Format(2)'), '0441234567'), '(044) 123-4567');
+  assert.equal(af.formatValue(af.parseFormat('AFTime_FormatEx("HH:MM")'), '5:30 pm'), '17:30');
+  // Validation.
+  const range = af.parseValidate('AFRange_Validate(true, 0, true, 100);');
+  assert.equal(af.validate(range, '50'), null);
+  assert.match(af.validate(range, '150'), /less than or equal to 100/);
+  // Calculations: AFSimple_Calculate and simplified field notation, as they are written and read back.
+  const values = { 'Qty 1': ['2'], 'Price 1': ['10.50'], 'Qty 2': ['3'], 'Price 2': ['4'], row: ['1', '2', '3'] };
+  const of = (n) => values[n] || [];
+  const sum = af.parseCalculate(af.calculateJs({ op: 'SUM', fields: ['Qty 1', 'Qty 2'] }));
+  assert.deepEqual(sum, { op: 'SUM', fields: ['Qty 1', 'Qty 2'] });
+  assert.equal(af.calculate(sum, of), '5');
+  assert.equal(af.calculate({ op: 'AVG', fields: ['row'] }, of), '2');
+  assert.equal(af.calculate({ op: 'PRD', fields: ['missing'] }, of), '0');
+  const sfn = af.parseCalculate(af.calculateJs({ notation: 'Qty\\ 1 * Price\\ 1 + Qty\\ 2 * Price\\ 2' }));
+  assert.equal(af.calculate(sfn, of), '33');
+  assert.deepEqual(af.calculationReads(sfn), ['Qty 1', 'Price 1', 'Qty 2', 'Price 2']);
+  assert.equal(af.evalNotation('(a + 2) / -b', (n) => ({ a: 4, b: 2 })[n]), -3);
+  // Comments and strings do not fool the parser.
+  assert.deepEqual(af.parseFormat('// AFPercent_Format(0, 0);\nAFPercent_Format(2, 1);'), { type: 'percent', decimals: 2, sep: 1 });
+
+  // Authoring: scripts written into the PDF, read back, the calculation order kept; a field table, date and image fields.
+  const d = await PDFDocument.create(); const f = await d.embedFont(StandardFonts.Helvetica);
+  const p = d.addPage([595, 842]);
+  for (const [n, y] of [['Qty', 700], ['Price', 660], ['Total', 620]]) d.getForm().createTextField(n).addToPage(p, { x: 72, y, width: 150, height: 20, font: f });
+  let b = await d.save();
+  b = await formauthor.setFieldActions(b, 'Price', { format: money, validate: { min: 0, max: null } });
+  b = await formauthor.setFieldActions(b, 'Total', { format: money, calculate: { notation: 'Qty * Price' } });
+  const read = await formauthor.readFormActions(b);
+  const total = read.fields.find((x) => x.name === 'Total');
+  assert.deepEqual(total.calculate, { notation: 'Qty * Price' });
+  assert.equal(total.format.currency, ' CHF');
+  assert.deepEqual(read.fields.find((x) => x.name === 'Price').validate, { min: 0, max: null });
+  assert.deepEqual(read.order, ['Total']);
+  assert.deepEqual(formauthor.calculationOrderProblems([{ name: 'A', calculate: { op: 'SUM', fields: ['B'] } }, { name: 'B', calculate: { op: 'SUM', fields: ['C'] } }], ['A', 'B']).length, 1);
+  // PDF.js sees the scripts as the field's actions (as other viewers will run them).
+  const fo = await (await open(b)).getFieldObjects();
+  const calcOf = (x) => (x.actions instanceof Map ? x.actions.get('Calculate') : x.actions?.Calculate);
+  const totalObj = (fo instanceof Map ? fo.get('Total') : fo.Total).find(calcOf);
+  assert.match(String(calcOf(totalObj)), /BVCALC Qty \* Price EVCALC/);
+  const tbl = await formauthor.addFieldTable(b, 0, [72, 300, 372, 400], { rows: 3, columns: ['Item', 'Amount'] });
+  assert.equal(tbl.names.length, 6);
+  b = await formauthor.addDateField(tbl.bytes, 0, [72, 250, 200, 270], 'Date');
+  b = await formauthor.addImageField(b, 0, [300, 600, 400, 700], 'Photo');
+  b = await formauthor.setButtonImage(b, 'Photo', PNG, 'image/png');
+  b = await formauthor.setTabOrder(b, [0], 'rows');
+  const out = await PDFDocument.load(b);
+  assert.equal(out.getPage(0).node.get(PDFName.of('Tabs')).toString(), '/R');
+  assert.ok(out.getForm().getFieldMaybe('Amount 3') && out.getForm().getFieldMaybe('Item 1'));
+  assert.equal((await formauthor.readFormActions(b)).fields.find((x) => x.name === 'Date').format.format, 'dd/mm/yyyy');
+  assert.ok(formauthor.isImageScript('event.target.buttonImportIcon();'));
+
+  // Form data exchange: every format reads back the same values.
+  const filled = await ops.importFormData(b, { Qty: '2', Price: '10.5', 'Item 1': 'Pen, blue "fine"', Date: '18/10/2026' });
+  for (const fmt of ['fdf', 'xfdf', 'xml', 'csv', 'txt']) {
+    const text = await formauthor.exportFormDataAs(filled, fmt, 'form.pdf');
+    const back = formauthor.parseFormData(text, fmt);
+    assert.equal(back.Qty, '2', `${fmt}: ${text.slice(0, 200)}`);
+    assert.equal(back['Item 1'], 'Pen, blue "fine"', fmt);
+    assert.equal(back.Date, '18/10/2026', fmt);
+  }
+});
+
+test('PDF/A: check the rules, fix what can be fixed, report what cannot', async () => {
+  const make = async (embedded) => {
+    const d = await PDFDocument.create(); d.registerFontkit(fontkit);
+    const ttf = embedded ? await readFont('arial.ttf') : null;
+    if (embedded && !ttf) return null;
+    const f = ttf ? await d.embedFont(ttf, { subset: true }) : await d.embedFont(StandardFonts.Helvetica);
+    const p = d.addPage([595, 842]);
+    p.drawText('Archive copy', { x: 72, y: 760, size: 18, font: f, color: rgb(0.2, 0.3, 0.8) });
+    const ctx = d.context;
+    d.catalog.set(PDFName.of('OpenAction'), ctx.obj({ S: 'JavaScript', JS: PDFString.of('app.alert(1)') }));
+    ops.addAnnotTo(p, ctx.register(ctx.obj({ Type: 'Annot', Subtype: 'Square', Rect: [50, 50, 100, 100], F: 2 })));
+    return d.save();
+  };
+  const plain = await make(false);
+  const issues = (await pdfa.verifyPdfA(plain, '2b')).map((i) => i.message).join('\n');
+  for (const re of [/no XMP metadata/, /no PDF\/A output intent/, /not embedded: Helvetica/, /action JavaScript/, /not set to print, or is hidden/, /no appearance/]) assert.match(issues, re);
+  const icc = new Uint8Array(400).fill(7);
+  const res = await pdfa.convertPdfA(plain, '2b', icc, 'Archive');
+  assert.deepEqual(res.remaining.map((i) => i.clause), ['6.2.11'], `only the fonts remain: ${JSON.stringify(res.remaining)}`);
+  const out = await PDFDocument.load(res.bytes);
+  assert.ok(out.catalog.get(PDFName.of('OutputIntents')) && !out.catalog.get(PDFName.of('OpenAction')));
+  assert.match(new TextDecoder().decode(decodePDFRawStream(out.catalog.lookup(PDFName.of('Metadata'))).decode()), /<pdfaid:part>2<\/pdfaid:part><pdfaid:conformance>B/);
+  const embedded = await make(true);
+  if (embedded) {
+    const r3 = await pdfa.convertPdfA(embedded, '3b', icc, 'Archive');
+    assert.deepEqual(r3.remaining, [], JSON.stringify(r3.remaining));
+    assert.match(await textOf(await open(r3.bytes), 1), /Archive copy/);
+  }
+});
+
 test('Watermark, header, Bates, crop, background', async () => {
   let b = await fixture(2);
   b = await ops.addWatermark(b, { text: 'CONFIDENTIAL ÄÖÜ', size: 40, color: '#0e7c86', opacity: 0.3, rotation: 45 }, readFont);
@@ -587,6 +945,50 @@ test('Create and validate digital signature', async () => {
   tampered[idx] = tampered[idx] ^ 1;
   assert.equal(sign.verifySignatures(tampered)[0].valid, false, 'tampering detected');
 });
+
+test('Incremental saving keeps the original bytes; signatures stay valid through form fill and more signatures', async () => {
+  const startsWith = (a, b) => a.length > b.length && Buffer.from(a.subarray(0, b.length)).equals(Buffer.from(b));
+  // A form with a field; changes go through a full intermediate save as the app's edits do.
+  const d0 = await PDFDocument.create(); const f = await d0.embedFont(StandardFonts.Helvetica);
+  const pg0 = d0.addPage([595, 842]); pg0.drawText('Contract', { x: 72, y: 760, size: 18, font: f });
+  d0.getForm().createTextField('name').addToPage(pg0, { x: 72, y: 600, width: 200, height: 20, font: f });
+  const original = await d0.save();
+  const edited = await PDFDocument.load(await (await PDFDocument.load(original)).save());
+  edited.getForm().getTextField('name').setText('Alice');
+  const inc = await incremental.appendUpdate(original, edited);
+  assert.ok(startsWith(inc, original), 'the original bytes stay as they are');
+  assert.ok(inc.length - original.length < original.length, 'only the changes are appended');
+  assert.equal((await PDFDocument.load(inc)).getForm().getTextField('name').getText(), 'Alice');
+  assert.match(await textOf(await open(inc), 1), /Contract/);
+  assert.equal(incremental.revisionCount(inc), 2);
+
+  // Sign, fill in, sign again: both signatures stay valid; the first reports the permitted changes.
+  const p12 = await sign.createDigitalId({ name: 'First Signer', password: 'pw' });
+  const s1 = await sign.signPdf(original, { p12, password: 'pw', reason: 'Approved' });
+  assert.ok(startsWith(s1, original), 'signing appends');
+  const filled = await PDFDocument.load(s1); filled.getForm().getTextField('name').setText('Bob');
+  const s2 = await incremental.appendUpdate(s1, filled);
+  const s3 = await sign.signPdf(s2, { p12, password: 'pw', reason: 'Seen', visible: { page: 0, rect: [300, 100, 500, 160] } });
+  const list = await sign.signatureDetails(s3);
+  assert.equal(list.length, 2);
+  assert.ok(list.every((x) => x.valid), JSON.stringify(list.map((x) => x.error)));
+  assert.deepEqual(list[0].changes.disallowed, [], JSON.stringify(list[0].changes));
+  assert.ok(list[0].changes.allowed.includes('form fill') && list[0].changes.allowed.includes('signatures'), JSON.stringify(list[0].changes));
+  assert.equal(list[1].changes, null, 'the last signature covers the whole file');
+  // Changing the page content after signing is not permitted.
+  const drawn = await PDFDocument.load(s1); drawn.getPage(0).drawText('Changed', { x: 72, y: 700, size: 12, font: await drawn.embedFont(StandardFonts.Helvetica) });
+  const s4 = await incremental.appendUpdate(s1, drawn);
+  assert.deepEqual((await sign.signatureDetails(s4))[0].changes.disallowed, ['page content']);
+  // A certification that allows no changes: a comment afterwards is not permitted; a second certification is refused.
+  const c1 = await sign.signPdf(original, { p12, password: 'pw', certify: 1 });
+  const commented = await PDFDocument.load(c1);
+  ops.addAnnotTo(commented.getPage(0), commented.context.register(commented.context.obj({ Type: 'Annot', Subtype: 'Text', Rect: [10, 10, 30, 30], Contents: PDFString.of('Note') })));
+  const c2 = await incremental.appendUpdate(c1, commented);
+  const cert = (await sign.signatureDetails(c2))[0];
+  assert.equal(cert.certify, 1);
+  assert.deepEqual(cert.changes.disallowed, ['comments']);
+  await assert.rejects(sign.signPdf(c1, { p12, password: 'pw', certify: 2 }), /first signature/);
+});
 test('Invisible text, page labels, JavaScript, analysis, PDF/A, image to PDF', async () => {
   let b = await fixture(1);
   b = await ops.addInvisibleText(b, [{ page: 0, words: [{ text: 'Geheimwort', x: 100, y: 100, width: 80, height: 12 }, { text: 'Größe', x: 200, y: 100, width: 50, height: 12 }] }], readFont);
@@ -946,8 +1348,89 @@ test('Skewed scans: determine the angle, straighten the image, map points back, 
   assert.ok(objs[3].bbox[1] < objs[0].bbox[1] - 3, `the last word lies lower than the first: ${objs[0].bbox} / ${objs[3].bbox}`);
 });
 
+/**
+ * PDF with text in an embedded TrueType font (Liberation Sans from PDF.js) whose ToUnicode map leaves the given
+ * characters empty, as Chrome does for the raised hyphens and colons of Inter.
+ */
+async function unmappedPdf(lines, chars) {
+  const d = await PDFDocument.create(); d.registerFontkit(fontkit);
+  const f = await d.embedFont(fs.readFileSync('node_modules/pdfjs-dist/standard_fonts/LiberationSans-Regular.ttf'), { subset: true });
+  const p = d.addPage([595, 842]);
+  for (const [t, x, y] of lines) p.drawText(t, { x, y, size: 12, font: f });
+  const d2 = await PDFDocument.load(await d.save());
+  const fontDicts = d2.getPage(0).node.Resources().lookup(PDFName.of('Font'), PDFDict);
+  for (const [, ref] of fontDicts.entries()) {
+    const tuRef = d2.context.lookup(ref, PDFDict).get(PDFName.of('ToUnicode'));
+    if (!tuRef) continue;
+    let cmap = Buffer.from(decodePDFRawStream(d2.context.lookup(tuRef)).decode()).toString('latin1');
+    for (const c of chars) cmap = cmap.replace(new RegExp(`^(<[0-9a-f]+>\\s+)<${c.codePointAt(0).toString(16).padStart(4, '0')}>$`, 'gim'), '$1<0000>');
+    d2.context.assign(tuRef, d2.context.flateStream(Buffer.from(cmap, 'latin1')));
+  }
+  return d2.save();
+}
+
+test('Characters without a text mapping: raised hyphens, dashes, colons and parentheses by their shape', async () => {
+  // Shapes like those of Inter's raised alternates (font units, 2816 per em).
+  const path = (...contours) => ({ commands: contours.flatMap((pts) => [{ command: 'moveTo', args: pts[0] }, ...pts.slice(1).map((p) => ({ command: p.length > 2 ? 'quadraticCurveTo' : 'lineTo', args: p })), { command: 'closePath', args: [] }]) });
+  const bar = (x0, y0, x1, y1) => [[x1, y1], [x1, y0], [x0, y0], [x0, y1]];
+  const dot = (cx, cy, r) => [[cx, cy - r], [cx + r, cy - r, cx + r, cy], [cx + r, cy + r, cx, cy + r], [cx - r, cy + r, cx - r, cy], [cx - r, cy - r, cx, cy - r]];
+  assert.equal(glyphs.glyphChar(path(bar(200, 914, 1096, 1134)), 2816), '-', 'hyphen');
+  assert.equal(glyphs.glyphChar(path(bar(0, 914, 1408, 1134)), 2816), '–', 'en dash');
+  assert.equal(glyphs.glyphChar(path(dot(398, 454, 200), dot(398, 1480, 200)), 2816), ':', 'colon');
+  const paren = [[300, 1024], [300, 1720, 680, 2304], [888, 2304], [544, 1700, 544, 1024], [544, 300, 888, -256], [680, -256], [300, 330, 300, 1024]];
+  assert.equal(glyphs.glyphChar(path(paren), 2816), '(', 'left parenthesis');
+  assert.equal(glyphs.glyphChar(path(paren.map((p) => p.map((v, k) => (k % 2 ? v : 1020 - v)))), 2816), ')', 'right parenthesis');
+  assert.equal(glyphs.glyphChar(path(dot(400, 400, 300)), 2816), null, 'a single dot is not guessed');
+  assert.deepEqual([...glyphs.zeroCodes('2 beginbfchar\n<0005> <0000>\n<0006> <002D>\nendbfchar\n1 beginbfrange\n<0010> <0012> [<0041> <0000> <0043>]\nendbfrange')], [5, 0x11]);
+  // In a PDF: PDF.js reads U+0000 for these characters; the editor puts the real ones back.
+  const b = await unmappedPdf([['CH-1234 Sample Town', 72, 700], ['(VAT): A–B', 72, 680]], '-():–');
+  const items = (await (await (await open(b)).getPage(1)).getTextContent()).items;
+  assert.ok(items.some((i) => i.str.includes('\u0000')), `PDF.js reads U+0000: ${JSON.stringify(items.map((i) => i.str))}`);
+  const r = content.interpret((await PDFDocument.load(b)).getPage(0), { glyphs: true });
+  const fixed = glyphs.fixUnmapped(items, r.glyphs).map((i) => i.str).join('|');
+  assert.ok(fixed.includes('CH-1234') && fixed.includes('(VAT): A–B') && !fixed.includes('\u0000'), `characters recognized: ${JSON.stringify(fixed)}`);
+});
+
+test('Text operators: copied exactly elsewhere, removed without moving the text after them', async () => {
+  const d = await PDFDocument.create(); const f = await d.embedFont(StandardFonts.Helvetica);
+  const p = d.addPage([595, 842]);
+  p.node.set(PDFName.of('Resources'), d.context.obj({ Font: { F1: f.ref } }));
+  // Like Chrome: the content starts with a transformation that it does not restore.
+  const raw = '0.5 0 0 -0.5 0 842 cm BT /F1 24 Tf 0 0.4 0.8 rg 1 0 0 -1 100 200 Tm (Hello) Tj ( World) Tj ET BT /F1 24 Tf 1 0 0 -1 100 300 Tm [(Ke) 120 (rn)] TJ ET';
+  p.node.set(PDFName.of('Contents'), d.context.register(d.context.flateStream(Buffer.from(raw, 'latin1'))));
+  const b0 = await d.save();
+  const d2 = await PDFDocument.load(b0); const pg = d2.getPage(0);
+  pg.node.normalize();
+  const r = content.interpret(pg);
+  const texts = r.items.filter((it) => it.kind === 'text');
+  assert.equal(texts.length, 3);
+  const moved = [texts[0], texts[2]];
+  assert.deepEqual(content.blockTextItems(r, [40, 730, 80, 760], null), [texts[0]], 'items of a block by area');
+  content.removeTextItems(pg, r, moved, null);
+  pg.pushOperators(...content.textCopyOperators(d2.context, moved, 10, -20, r.endCtm));
+  const out = await d2.save();
+  const textItems = async (bytes) => (await (await (await open(bytes)).getPage(1)).getTextContent()).items.filter((i) => i.str.trim());
+  const items = await textItems(out);
+  const at = (list, re) => list.find((i) => re.test(i.str));
+  const pos = (i) => [Math.round(i.transform[4] * 100) / 100, Math.round(i.transform[5] * 100) / 100, Math.round(Math.hypot(i.transform[2], i.transform[3]) * 100) / 100];
+  assert.deepEqual(pos(at(items, /Hello/)), [60, 722, 12], 'copied 10 pt to the right and 20 pt down, same size');
+  assert.deepEqual(pos(at(items, /Kern|Ke/)), [60, 672, 12], 'kerned word copied with its spacing');
+  // The text after the removed one in the same text object stays where it was: "World" after "Hello "
+  // (Helvetica widths H 722, e 556, l 222, l 222, o 556, space 278 at 12 pt), not moved to the left.
+  assert.ok((await textItems(b0)).some((i) => /Hello World/.test(i.str)), 'one line before');
+  const w1 = pos(at(items, /World/));
+  assert.ok(Math.abs(w1[0] - (50 + (2556 / 1000) * 12)) < 0.05 && w1[1] === 742, `the text after the removed one stays in place: ${w1}`);
+  // The copy keeps its color.
+  const again = content.interpret((await PDFDocument.load(out)).getPage(0)).items.filter((it) => it.kind === 'text');
+  const hello = again.find((it) => Math.abs(it.bbox[0] - 60) < 0.5);
+  assert.deepEqual(hello.color.map((v) => Math.round(v * 10) / 10), [0, 0.4, 0.8]);
+});
+
 let failed = 0;
+// DP_CORE_ONLY: a regular expression for the names of the tests to run (all when empty).
+const only = process.env.DP_CORE_ONLY ? new RegExp(process.env.DP_CORE_ONLY, 'i') : null;
 for (const [name, fn] of cases) {
+  if (only && !only.test(name)) continue;
   try { await fn(); console.log(`  OK    ${name}`); }
   catch (e) { failed++; console.log(`  FAIL   ${name}\n         ${e.stack.split('\n').slice(0, 6).join('\n         ')}`); }
 }

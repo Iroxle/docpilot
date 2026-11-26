@@ -1,0 +1,35 @@
+name: Feature request
+description: An idea for a new feature or an improvement.
+title: "[Idea]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for your idea. Please check the [list of features](https://github.com/Iroxle/docpilot/blob/main/FEATURES.md) first; it also lists what DocPilot cannot do yet.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What would you like to do?
+      description: Describe the task or the problem, not only the solution. For example "I often have to ..."
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: How could DocPilot help?
+      description: How you imagine the feature, where you would look for it in the program.
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      multiple: true
+      options:
+        - Windows
+        - macOS
+  - type: textarea
+    id: more
+    attributes:
+      label: Anything else?
+      description: Examples, screenshots (without confidential content), how other programs solve it.

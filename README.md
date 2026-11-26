@@ -54,16 +54,23 @@ For IT departments there is an MSI for silent, machine-wide installation. JavaSc
 <details>
 <summary><strong>Recent changes</strong></summary>
 
-- **2026-11-28 (1.1.0):** DocPilot for Mac: disk images for Apple silicon and Intel Macs, with the same features as on Windows.
+- **2026-11-26 (1.1.0):** DocPilot for Mac: disk images for Apple silicon and Intel Macs, with the same features as on Windows.
+- **2026-11-26 (1.1.0):** Forms format and calculate without JavaScript; field properties, date and image fields, XFDF/FDF/XML/CSV data.
+- **2026-11-26 (1.1.0):** Saving appends the changes: signed documents can be filled in and signed again; certify; PDF/A check and conversion.
+- **2026-11-26 (1.1.0):** Real redaction: only what lies under the marks is removed, the rest of the page stays sharp text.
+- **2026-11-26 (1.1.0):** Reduce file size: images to the resolution the pages show them at, black-and-white scans as Group 4.
+- **2026-11-26 (1.1.0):** Combine, insert, extract and split keep bookmarks, links, form fields, layers and attachments.
+- **2026-11-26 (1.1.0):** Edit PDF: moved text keeps its exact font and size, and tables on invoices stay one block.
+- **2026-11-26 (1.1.0):** Security: updated built-in browser engine (Electron 45.5.0).
+
+<details>
+<summary><strong>Older</strong></summary>
+
 - **2026-11-24 (1.0.2):** Find and replace in the whole document, including recognized text in scans.
 - **2026-11-24 (1.0.2):** Form fields are detected automatically, with a preview before they are created.
 - **2026-11-24 (1.0.2):** Tables arrive as real tables in Word, Excel and PowerPoint exports.
 - **2026-11-24 (1.0.2):** Skewed scans are straightened for text recognition; new "Straighten page" command.
 - **2026-11-24 (1.0.2):** Dark appearance: Light, Dark or Same as Windows.
-
-<details>
-<summary><strong>Older</strong></summary>
-
 - **2026-11-23 (1.0.1):** First public release. Clean recognition and editing of scans with tables, logos and image strips.
 
 </details>
@@ -242,7 +249,7 @@ Installers are built by GitHub Actions ([release.yml](.github/workflows/release.
 1. Set the new version in `package.json` and add a section for it to [CHANGELOG.md](CHANGELOG.md).
 2. Push to `main`.
 
-If there is no release for that version yet, the workflow runs the tests on Windows and macOS, builds the setup, the MSI, the portable version and the two Mac disk images, and publishes them as release `v<version>` with checksums. The release text is the changelog section of that version. A release is only published when the Windows tests pass (two steps that need things the GitHub machines lack are skipped there); on macOS, failed tests are reported as warnings, because the app tests were written for Windows. Pushes to `main` that do not change the version do nothing. Pushes to other branches and pull requests run the tests and build everything without publishing. Running the workflow by hand ("Run workflow") does the same, optionally publishing a release.
+If there is no release for that version yet, the workflow runs the tests on Windows and macOS, builds the setup, the MSI, the portable version and the two Mac disk images, and publishes them as release `v<version>` with checksums. The release text is the changelog section of that version. A release is only published when the Windows tests pass (one step whose text recognition differs slightly on the GitHub machines is skipped there); on macOS, failed tests are reported as warnings, because the app tests were written for Windows. Pushes to `main` that do not change the version do nothing. Pushes to other branches and pull requests run the tests and build everything without publishing. Running the workflow by hand ("Run workflow") does the same, optionally publishing a release.
 
 The Mac app is signed ad hoc. Once the repository has an Apple Developer ID certificate and an Apple ID as secrets (see the comment at the top of the workflow), it is signed and notarized by Apple, and the first-start step on the Mac is no longer needed.
 
@@ -269,7 +276,7 @@ msiexec /i DocPilot-x64.msi /qn
 
 ## Contributing
 
-Bug reports and suggestions are welcome as [issues](https://github.com/Iroxle/docpilot/issues). For pull requests there is a [template](.github/pull_request_template.md) that asks what was changed, how it was tested and under which terms the contribution is made. Please run `npm run lint` and `npm run test:core` before opening one.
+Bug reports and suggestions are welcome as [issues](https://github.com/Iroxle/docpilot/issues/new/choose): there is a form for bug reports (with the DocPilot version and your system) and one for ideas. Please never attach confidential documents. For pull requests there is a [template](.github/pull_request_template.md) that asks what was changed, how it was tested and under which terms the contribution is made. Please run `npm run lint` and `npm run test:core` before opening one.
 
 ---
 

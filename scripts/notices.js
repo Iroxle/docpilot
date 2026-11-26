@@ -47,6 +47,12 @@ const mitText = (pj) => {
 // The language packages contain trained data from tesseract-ocr/tessdata_best, which is licensed under Apache 2.0.
 const TESSDATA_NOTE = 'The trained language data (*.traineddata) comes from https://github.com/tesseract-ocr/tessdata_best and is licensed under the Apache License, Version 2.0. The npm package that distributes it is marked MIT.';
 
+// Code ported to JavaScript from other projects (not npm packages): the copyright and permission notice stays with it.
+const PORTED = [{
+  name: 'PdfCraft', version: '(ported parts)', license: 'MIT', repo: 'https://github.com/storytold/pdfcraft',
+  text: `Parts of DocPilot's PDF code (combining and extracting pages, redaction, file size optimization, form formats, calculations and data exchange, incremental saving and signature checks, PDF/A checks) are ported from PdfCraft, which is available under the MIT License or the Apache License 2.0; DocPilot uses it under the MIT License.\n\nMIT License\n\nCopyright (c) 2026 ArtCraft Team and the PdfCraft contributors\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the "Software"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.`,
+}];
+
 const APACHE_FALLBACK = 'Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the License. You may obtain a copy of the License at\n\n    http://www.apache.org/licenses/LICENSE-2.0\n\nUnless required by applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.';
 
 async function main() {
@@ -72,7 +78,7 @@ async function main() {
     else if (!text && /^MIT$/i.test(lic)) text = mitText(pj);
     const url = repo.replace(/^git\+/, '').replace(/\.git$/, '').replace(/^(ssh:\/\/)?git@github\.com[:/]/, 'https://github.com/').replace(/^git:/, 'https:');
     return { name: pj.name, version: pj.version, license: tessdata ? 'Apache-2.0 (data), MIT (package)' : lic, repo: url, text, notice: noticeText(d) };
-  }).sort((a, b) => a.name.localeCompare(b.name));
+  }).concat(PORTED).sort((a, b) => a.name.localeCompare(b.name));
 
   const missing = pkgs.filter((p) => !p.text);
   const out = [

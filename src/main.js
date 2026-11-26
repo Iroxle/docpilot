@@ -12,6 +12,7 @@ import { h, $, $$, icon, ibtn, toast, errToast, busy, formDialog, messageBox, fm
 import { setMetadata, parseRange } from './pdf/ops.js';
 import { openPreferences, withDefaults } from './prefs.js';
 import { Scripting } from './scripting.js';
+import { FormCalc } from './formcalc.js';
 import { loadFonts } from './fonts.js';
 import { scannedPages } from './scan.js';
 import { fileToPdf } from './convert.js';
@@ -54,6 +55,7 @@ class App {
     this.policy = Object.freeze({ allowJavaScript: false, allowOfficeMacros: false, ...(await dp.policy().catch(() => ({}))) });
     this.settings = this.enforcePolicy(withDefaults(await dp.settingsGet()));
     this.scripting = new Scripting(this);
+    this.formCalc = new FormCalc(this);
     this.viewer = new Viewer(this, $('#viewer'));
     this.panels = new Panels(this);
     this.overlay = new Overlay(this);

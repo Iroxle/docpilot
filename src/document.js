@@ -3,6 +3,7 @@ import * as pdfjs from 'pdfjs-dist/build/pdf.mjs';
 import { PDFDocument } from '@cantoo/pdf-lib';
 import { loadDoc, loadForEdit, saveDoc, cryptoRandom, gcObjects } from './pdf/ops.js';
 import { stripAndImport, writeAnnotations } from './pdf/annots.js';
+import { appendUpdate } from './pdf/incremental.js';
 import { formDialog, messageBox, fileBase } from './util.js';
 
 pdfjs.GlobalWorkerOptions.workerSrc = 'pdfjs/pdf.worker.min.mjs';
@@ -162,7 +163,7 @@ export class Doc {
       this.emit('security');
     }
     if (this.signed && !this.signWarned && Doc.settings?.warnSigned !== false) {
-      const c = await messageBox('Signed document', 'This document is digitally signed. Any change will invalidate the existing signature. Edit anyway?', ['Edit', 'Cancel'], { primary: 1 });
+      const c = await messageBox('Signed document', 'This document is digitally signed. Changes are added to the file without touching what was signed; the Signatures panel then shows what changed after signing (changes to the page content count as not permitted). Edit anyway?', ['Edit', 'Cancel'], { primary: 1 });
       if (c !== 0) return false;
       this.signWarned = true;
     }
@@ -229,13 +230,25 @@ export class Doc {
     return true;
   }
 
-  /** Creates the final PDF file with all comments. */
+  /**
+   * Creates the final PDF file with all comments. o.incremental: append the changes to the file as it was saved
+   * (its bytes stay as they are), when the document is not protected and nothing requires a full rewrite.
+   */
   async buildOutput(o = {}) {
     await this.commitForms();
     const hasAnnots = this.allAnnots().length > 0;
-    if (!hasAnnots && !this.security) return this.bytes;
+    const incremental = o.incremental && this.saved && !this.security && !this.encrypted && !this.fullSave;
+    if (!hasAnnots && !this.security) {
+      if (incremental) {
+        if (this.bytes === this.saved) return this.saved;
+        const inc = await appendUpdate(this.saved, await loadForEdit(this.bytes));
+        if (inc) return inc;
+      }
+      return this.bytes;
+    }
     const d = await loadForEdit(this.bytes);
     if (hasAnnots) await writeAnnotations(d, this.annots, readFont);
+    if (incremental) { const inc = await appendUpdate(this.saved, d); if (inc) return inc; }
     if (this.security && !o.noEncrypt) {
       const perms = this.security.permissions;
       d.encrypt({ userPassword: this.security.userPassword || '', ownerPassword: this.security.ownerPassword || this.security.userPassword || cryptoRandom(), ...(perms ? { permissions: perms } : {}) });
@@ -243,10 +256,20 @@ export class Doc {
     return saveDoc(d);
   }
 
+  /**
+   * Saving to the same file appends the changes (incremental update); so does saving a signed document anywhere,
+   * which keeps its signatures valid. Save as writes a new, complete file. After redacting, compressing or changing
+   * the protection, the whole file is written again, or the old content would stay in it.
+   */
   async saveTo(path) {
-    const out = await this.buildOutput();
+    if (this.signed && this.fullSave && Doc.settings?.warnSigned !== false) {
+      const c = await messageBox('Signed document', 'Saving now writes the whole file again (after redacting or compressing), so the existing digital signatures become invalid. Save anyway?', ['Save', 'Cancel'], { primary: 1 });
+      if (c !== 0) throw new Error('Saving was cancelled.');
+    }
+    const incremental = !!this.saved && (path === this.path || this.signed);
+    const out = await this.buildOutput({ incremental });
     await window.dp.writeFile(path, out);
-    this.saved = out; this.path = path;
+    this.saved = out; this.path = path; this.fullSave = false;
     this.name = path.split(/[\\/]/).pop();
     this.dirty = false;
     this.emit('dirty');

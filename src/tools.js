@@ -1,10 +1,14 @@
 // All tools: definition of the groups and their implementation.
-import { h, $, icon, ibtn, toast, errToast, busy, formDialog, messageBox, hexToRgb, rgbToHex, cssColor, fileBase, canvasBytes, normalizeImage, toBase64, fmtSize, contextMenu, inFolder } from './util.js';
+import { h, $, icon, ibtn, toast, errToast, busy, formDialog, messageBox, hexToRgb, rgbToHex, cssColor, fileBase, canvasBytes, normalizeImage, toBase64, fmtSize, contextMenu, inFolder, imageCodec } from './util.js';
 import * as ops from './pdf/ops.js';
 import { loadForEdit, saveDoc } from './pdf/ops.js';
 import { writeAnnotations, flattenAnnotationsInDoc, newId } from './pdf/annots.js';
 import { createDigitalId, signPdf } from './pdf/sign.js';
-import { readFont, Doc } from './document.js';
+import { readFont, Doc, pdfjs, RENDER_OPTS } from './document.js';
+import * as redact from './pdf/redact.js';
+import * as optimize from './pdf/optimize.js';
+import * as formtools from './formtools.js';
+import * as pdfa from './pdf/pdfa.js';
 import { wordBoxes, rectsOverlap, quadFromRect, rectFromQuad, diffWords, prefixRatio } from './textutil.js';
 import * as conv from './convert.js';
 import { boundsOf } from './overlay.js';
@@ -17,6 +21,8 @@ const IMG_FILTER = [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 
 const SIZES = [['595.28x841.89', 'A4 portrait'], ['841.89x595.28', 'A4 landscape'], ['841.89x1190.55', 'A3 portrait'], ['612x792', 'Letter'], ['419.53x595.28', 'A5']];
 const parseSize = (s) => { const [width, height] = s.split('x').map(Number); return { width, height }; };
 const MM = 2.834645669;
+/** The message after form fields were renamed to keep same-named fields of different files apart. */
+const renamedNote = (list) => `${list.length === 1 ? 'A form field was' : `${list.length} form fields were`} renamed to keep it apart from a field of the same name: ${list.slice(0, 3).map(([a, b]) => `${a} → ${b}`).join(', ')}${list.length > 3 ? ', ...' : ''}`;
 
 export class Tools {
   constructor(app) {
@@ -63,24 +69,25 @@ export class Tools {
         T('fs-text', 'Enter text', 'text'), T('fs-check', 'Check mark', 'check'), T('fs-cross', 'Cross', 'cross'), T('fs-dot', 'Points', 'dot'), T('fs-date', 'Date', 'date'), R('Place signature', 'sign', () => this.placeSignature('signature')), R('Place initials', 'sign', () => this.placeSignature('initials')), R('Set up signature...', 'gear', () => this.signSetup('signature')), R('Set up initials...', 'gear', () => this.signSetup('initials')),
       ] },
       { id: 'certs', label: 'Use certificates', icon: 'cert', desc: 'Sign digitally and validate', items: [
-        T('digital-sign', 'Sign digitally', 'cert'), R('Sign digitally (invisible)...', 'cert', () => this.digitalSign(null)), R('Create digital ID...', 'plus', () => this.createId(), false), R('Validate all signatures', 'preflight', () => this.app.panels.show('signatures')),
+        T('digital-sign', 'Sign digitally', 'cert'), R('Sign digitally (invisible)...', 'cert', () => this.digitalSign(null)), T('certify-sign', 'Certify (visible signature)', 'cert'), R('Certify (invisible signature)...', 'cert', () => this.digitalSign(null, true)), R('Create digital ID...', 'plus', () => this.createId(), false), R('Validate all signatures', 'preflight', () => this.app.panels.show('signatures')),
       ] },
       { id: 'form', label: 'Prepare form', icon: 'form', desc: 'Create fields, manage data', extra: () => this.formFieldsList(), items: [
-        { sub: 'Fields' }, R('Detect fields automatically...', 'search', () => this.app.fieldDetect.start()), T('form-text', 'Text box', 'textbox'), T('form-multiline', 'Multiline text field', 'textbox'), T('form-checkbox', 'Check box', 'chk'), T('form-radio', 'Radio button', 'radio'), T('form-dropdown', 'Dropdown', 'dd'), T('form-list', 'List box', 'list'), T('form-button', 'Button', 'btn'), T('form-signature', 'Signature field', 'cert'),
-        { sub: 'Form data' }, R('Highlight form fields', 'highlight', () => this.toggleFormHighlight()), R('Export data (JSON)...', 'share', () => this.exportForm()), R('Import data (JSON)...', 'open', () => this.importForm()), R('Reset form...', 'undo', () => this.resetForm()), R('Flatten form...', 'compress', () => this.flattenForm()),
+        { sub: 'Fields' }, R('Detect fields automatically...', 'search', () => this.app.fieldDetect.start()), T('form-text', 'Text box', 'textbox'), T('form-multiline', 'Multiline text field', 'textbox'), T('form-checkbox', 'Check box', 'chk'), T('form-radio', 'Radio button', 'radio'), T('form-dropdown', 'Dropdown', 'dd'), T('form-list', 'List box', 'list'), T('form-button', 'Button', 'btn'), T('form-date', 'Date field', 'date'), T('form-image', 'Image field', 'img'), T('form-table', 'Text field table', 'list'), T('form-signature', 'Signature field', 'cert'),
+        { sub: 'Behaviour' }, R('Field properties...', 'gear', () => formtools.fieldProperties(this)), R('Calculation order...', 'list', () => formtools.calculationOrder(this)), R('Tab order...', 'list', () => formtools.tabOrder(this)),
+        { sub: 'Form data' }, R('Highlight form fields', 'highlight', () => this.toggleFormHighlight()), R('Export data...', 'share', () => formtools.exportFormData(this)), R('Import data...', 'open', () => formtools.importFormData(this)), R('Reset form...', 'undo', () => this.resetForm()), R('Flatten form...', 'compress', () => this.flattenForm()),
       ] },
       { id: 'protect', label: 'Protect', icon: 'lock', desc: 'Passwords and permissions', items: [
         R('Password protection...', 'lock', () => this.encryptDialog()), R('Remove security...', 'lock', () => this.removeSecurity()), R('Sanitize document...', 'redact', () => this.sanitize()),
       ] },
       { id: 'redact', label: 'Redact', icon: 'redact', desc: 'Permanently remove content', extra: () => h('div', { class: 'lp-note' }, 'Marks stay editable until you choose "Apply redactions". After that, the content is permanently removed from the document.'), items: [
-        T('redact-text', 'Mark up text', 'text'), T('redact-area', 'Mark area', 'rect'), R('Mark pages...', 'pages', () => this.redactPages()), R('Find and mark...', 'search', () => this.searchRedact()), R('Apply redactions', 'check', () => this.applyRedactions()),
+        T('redact-text', 'Mark up text', 'text'), T('redact-area', 'Mark area', 'rect'), R('Mark pages...', 'pages', () => this.redactPages()), R('Find and mark...', 'search', () => this.searchRedact()), R('Redaction properties...', 'gear', () => this.redactProperties(), false), R('Apply redactions', 'check', () => this.applyRedactions()),
       ] },
       { id: 'ocr', label: 'Scan & OCR', icon: 'scan', desc: 'Recognize text in scans', items: [R('Recognize text...', 'scan', () => this.ocr()), R('Straighten page...', 'rotR', () => this.deskew()), R('Create from scanner...', 'scan', () => this.createFromScanner(), false)] },
-      { id: 'compress', label: 'Compress PDF', icon: 'compress', desc: 'Reduce file size', direct: this.guard(() => this.compress()) },
+      { id: 'compress', label: 'Compress PDF', icon: 'compress', desc: 'Reduce file size', items: [R('Reduce file size...', 'compress', () => this.compress()), R('Advanced optimization...', 'gear', () => this.compressAdvanced())] },
       { id: 'measure', label: 'Measure', icon: 'measure', desc: 'Distance, perimeter, area', items: [T('measure-dist', 'Distance', 'line'), T('measure-perimeter', 'Perimeter', 'polyline'), T('measure-area', 'Area', 'poly'), R('Set scale...', 'ruler', () => this.scaleDialog())] },
       { id: 'compare', label: 'Compare files', icon: 'compare', desc: 'Differences between two PDFs', direct: this.guard(() => this.compare()) },
       { id: 'access', label: 'Accessibility', icon: 'access', desc: 'Check and read out loud', items: [R('Quick check', 'preflight', () => this.accessCheck()), R('Set title and language...', 'text', () => this.titleLang()), R('Read page aloud', 'speak', () => this.app.speak('page')), R('Stop reading', 'x', () => this.app.speak('stop'))] },
-      { id: 'preflight', label: 'Print production', icon: 'preflight', desc: 'Preflight and fonts', items: [R('Preflight report', 'preflight', () => this.preflight()), R('Crop for prepress...', 'crop', () => this.cropDialog())] },
+      { id: 'preflight', label: 'Print production', icon: 'preflight', desc: 'Preflight and fonts', items: [R('Preflight report', 'preflight', () => this.preflight()), R('Check PDF/A compliance', 'preflight', () => this.pdfaCheck()), R('Crop for prepress...', 'crop', () => this.cropDialog())] },
       { id: 'advanced', label: 'Document check and JavaScript', icon: 'js', desc: 'Open options, scripts', items: [R('Open options...', 'gear', () => this.initialView()), R('Document JavaScript...', 'js', () => this.javascript()), R('Document properties...', 'info', () => this.app.run('properties'))] },
     ];
   }
@@ -146,7 +153,11 @@ export class Tools {
     reg('snapshot', (i, rect) => this.snapshot(i, rect), { needsDrag: true });
     reg('redact-area', async (i, rect) => { await ov().add({ type: 'redact', page: i, rect, quads: [quadFromRect(rect)], color: [0.85, 0, 0], opacity: 1, contents: '' }); }, { needsDrag: true, keep: true });
     reg('digital-sign', (i, rect) => this.digitalSign({ page: i, rect }), { needsDrag: true });
+    reg('certify-sign', (i, rect) => this.digitalSign({ page: i, rect }, true), { needsDrag: true });
     for (const t of ['text', 'multiline', 'checkbox', 'radio', 'dropdown', 'list', 'button', 'signature']) reg(`form-${t}`, (i, rect, p0) => this.addField(t, i, rect, p0));
+    reg('form-date', (i, rect, p0) => formtools.dateField(this, i, rect, p0));
+    reg('form-image', (i, rect, p0) => formtools.imageField(this, i, rect, p0));
+    reg('form-table', (i, rect) => formtools.fieldTable(this, i, rect), { needsDrag: true });
     reg('measure-dist', (i, rect, p0, e, p1) => this.measureDistance(i, p0, p1), { needsDrag: true, keep: true });
     reg('place-stamp', (i, rect, p0) => this.placeStamp(i, rect, p0));
     click('fs-text', (i, p) => this.fsText(i, p));
@@ -292,7 +303,10 @@ export class Tools {
   insertFromFile(at) {
     return this.guard(async () => {
       const f = await this.pickPdf('Insert file');
-      if (f) await this.mutate((b) => ops.insertPdf(b, f.bytes, at));
+      if (!f) return;
+      let renamed = [];
+      await this.mutate(async (b) => { const r = await ops.insertPdf(b, f.bytes, at, undefined, undefined, fileBase(f.name)); renamed = r.renamed; return r; });
+      if (renamed.length) toast(renamedNote(renamed));
     })();
   }
   replaceFromFile(list) {
@@ -354,10 +368,11 @@ export class Tools {
     if (!r) return;
     const out = await busy('Combining files', async (p) => {
       const items = [];
-      for (let i = 0; i < files.length; i++) { items.push({ bytes: await conv.fileToPdf(files[i]) }); p((i + 1) / files.length / 2, files[i].split(/[\\/]/).pop()); }
-      return ops.mergePdfs(items);
+      for (let i = 0; i < files.length; i++) { const name = files[i].split(/[\\/]/).pop(); items.push({ bytes: await conv.fileToPdf(files[i]), title: fileBase(name) }); p((i + 1) / files.length / 2, name); }
+      return ops.mergePdfs(items, { report: true });
     });
-    await this.app.openBytes(out, 'Combined.pdf', { unsaved: true });
+    await this.app.openBytes(out.bytes, 'Combined.pdf', { unsaved: true });
+    if (out.renamed.length) toast(renamedNote(out.renamed));
   }
 
   // --- Comments -------------------------------------------------------------------------
@@ -536,26 +551,27 @@ export class Tools {
     this.app.settings.lastPfx = p; await this.app.saveSettings();
     toast('Digital ID saved', 'ok');
   }
-  async digitalSign(visible) {
+  async digitalSign(visible, certify = false) {
     const doc = this.doc;
     if (doc.security) throw new Error('Protected documents cannot be signed. Please remove the security first.');
-    if (doc.signed) { const c = await messageBox('Already signed', 'The document already contains a signature. Another signature will invalidate the existing one, because additional signatures are not saved incrementally. Continue anyway?', ['Continue', 'Cancel'], { primary: 1 }); if (c !== 0) return; }
+    if (certify && doc.signed) throw new Error('This document is already signed. Only the first signature can certify a document.');
     let path = this.app.settings.lastPfx;
     const stat = path ? await window.dp.fileStat(path) : null;
     if (!stat) { [path] = await window.dp.openDialog({ title: 'Choose digital ID', filters: [{ name: 'Digital ID', extensions: ['pfx', 'p12'] }] }); if (!path) return; }
-    const r = await formDialog('Sign digitally', [{ type: 'info', label: `Digital ID: ${path.split(/[\\/]/).pop()}` }, { k: 'password', label: 'ID password', type: 'password', required: true }, { k: 'reason', label: 'Reason', value: 'I approve this document' }, { k: 'location', label: 'Location' }], { ok: 'Sign' });
+    const r = await formDialog('Sign digitally', [{ type: 'info', label: `Digital ID: ${path.split(/[\\/]/).pop()}` }, { k: 'password', label: 'ID password', type: 'password', required: true }, { k: 'reason', label: 'Reason', value: certify ? 'I am the author of this document' : 'I approve this document' }, { k: 'location', label: 'Location' }, ...(certify ? [{ k: 'mdp', label: 'Changes allowed after certifying', type: 'select', options: [['1', 'No changes'], ['2', 'Filling in forms and signing'], ['3', 'Filling in forms, signing and comments']], value: '2' }] : [])], { ok: 'Sign' });
     if (!r) return;
     const target = await window.dp.saveDialog({ title: 'Save signed document', defaultPath: doc.suggestedPath('_signed') });
     if (!target) return;
     const p12 = await window.dp.readFile(path);
-    const out = await busy('Signing document', async () => signPdf(await doc.buildOutput({ noEncrypt: true }), { p12, password: r.password, reason: r.reason, location: r.location, visible: visible || undefined }));
+    // On top of the file as it is saved: earlier signatures stay valid.
+    const out = await busy(certify ? 'Certifying document' : 'Signing document', async () => signPdf(await doc.buildOutput({ noEncrypt: true, incremental: true }), { p12, password: r.password, reason: r.reason, location: r.location, visible: visible || undefined, certify: certify ? +r.mdp : undefined }));
     await window.dp.writeFile(target, out);
     this.app.settings.lastPfx = path; await this.app.saveSettings();
     doc.dirty = false;
     await this.app.closeDoc(doc, true);
     await this.app.openPath(target);
     this.app.panels.show('signatures');
-    toast('Document signed', 'ok');
+    toast(certify ? 'Document certified' : 'Document signed', 'ok');
   }
 
   // --- Forms --------------------------------------------------------------------------
@@ -582,19 +598,23 @@ export class Tools {
     return h('div', {}, h('div', { class: 'lp-sub' }, `Fields (${list.length})`), list.map((f) => h('div', { class: 'kv', style: { padding: '3px 8px' } },
       h('button', { class: 'res', type: 'button', title: f.type, style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, onclick: () => { if (f.page >= 0) this.viewer.goto(f.page, f.rect ? { pdfY: f.rect[3] + 30 } : {}); } }, f.name),
       ibtn('more', 'Options', (e) => contextMenu(e.clientX, e.clientY, [
+        { label: 'Properties...', run: this.guard(() => formtools.fieldProperties(this, f.name)) },
         { label: f.required ? 'Make optional' : 'Make required', run: this.guard(async () => { await this.mutate((b) => ops.setFieldFlags(b, f.name, { required: !f.required })); this.renderGroup(); }) },
         { label: f.readOnly ? 'Make editable' : 'Read-only', run: this.guard(async () => { await this.mutate((b) => ops.setFieldFlags(b, f.name, { readOnly: !f.readOnly })); this.renderGroup(); }) },
         { label: 'Delete field', run: this.guard(async () => { await this.mutate((b) => ops.removeFormField(b, f.name)); this.renderGroup(); }) },
       ])))));
   }
   toggleFormHighlight() { this.app.formHighlight = !this.app.formHighlight; document.body.classList.toggle('form-hl', this.app.formHighlight); this.viewer.invalidate(); }
-  async exportForm() {
+  exportForm() { return formtools.exportFormData(this); }
+  fieldPropertiesFor(name) { return this.guard(() => formtools.fieldProperties(this, name))(); }
+  importForm() { return formtools.importFormData(this); }
+  async exportFormJson() {
     await this.doc.commitForms();
     const data = await ops.exportFormData(this.doc.bytes);
     const p = await window.dp.saveDialog({ title: 'Export form data', defaultPath: `${fileBase(this.doc.name)}_Data.json`, filters: [{ name: 'JSON', extensions: ['json'] }] });
     if (p) { await window.dp.writeFile(p, new TextEncoder().encode(JSON.stringify(data, null, 2))); toast('Data exported', 'ok'); }
   }
-  async importForm() {
+  async importFormJson() {
     const [p] = await window.dp.openDialog({ title: 'Import form data', filters: [{ name: 'JSON', extensions: ['json'] }] });
     if (!p) return;
     let data;
@@ -633,7 +653,7 @@ export class Tools {
       { k: 'metadata', label: 'Metadata', type: 'checkbox', value: true }, { k: 'attachments', label: 'Attachments', type: 'checkbox', value: true }, { k: 'comments', label: 'Comments', type: 'checkbox', value: true }, { k: 'javascript', label: 'JavaScript and actions', type: 'checkbox', value: true }, { k: 'links', label: 'Left', type: 'checkbox' }, { k: 'forms', label: 'Flatten form fields', type: 'checkbox' }, { k: 'thumbs', label: 'Thumbnails', type: 'checkbox', value: true },
     ], { ok: 'Sanitize' });
     if (!r) return;
-    await this.mutate((b) => ops.sanitizeDocument(b, r));
+    if (await this.mutate((b) => ops.sanitizeDocument(b, r))) this.doc.fullSave = true;
     if (r.comments) { this.doc.annots = new Map(); this.doc.emit('reload', { annotOnly: true }); this.app.panels.commentsChanged(); }
     toast('Document sanitized', 'ok');
   }
@@ -674,54 +694,65 @@ export class Tools {
     }
     toast(total ? `${total} results marked. Please review, then apply.` : 'No results found.', total ? 'ok' : '');
   }
+  /** How applied redactions look: fill colour (none = no box), overlay text, its colour, size (0 = fit), alignment, repeated. */
+  redactLook() { return { fill: [0, 0, 0], text: '', textColor: [1, 1, 1], size: 0, align: 1, repeat: false, ...(this.app.settings.redactLook || {}) }; }
+  async redactProperties() {
+    const l = this.redactLook();
+    const r = await formDialog('Redaction properties', [
+      { type: 'info', label: 'How applied redactions look. The content under the marks is removed in any case.' },
+      { k: 'box', label: 'Draw a box', type: 'checkbox', value: !!l.fill },
+      { k: 'fill', label: 'Box colour', type: 'color', value: rgbToHex(l.fill || [0, 0, 0]) },
+      { k: 'text', label: 'Overlay text', value: l.text, placeholder: 'e.g. REDACTED' },
+      { k: 'textColor', label: 'Text colour', type: 'color', value: rgbToHex(l.textColor) },
+      { k: 'size', label: 'Font size (0 = fit the box)', type: 'number', value: l.size, min: 0, max: 72 },
+      { k: 'align', label: 'Alignment', type: 'select', options: [['0', 'Left'], ['1', 'Centre'], ['2', 'Right']], value: String(l.align) },
+      { k: 'repeat', label: 'Repeat the text to fill the box', type: 'checkbox', value: l.repeat },
+    ], { ok: 'Save' });
+    if (!r) return;
+    this.app.settings.redactLook = { fill: r.box ? hexToRgb(r.fill) : null, text: r.text || '', textColor: hexToRgb(r.textColor), size: Math.max(0, +r.size || 0), align: +r.align, repeat: !!r.repeat };
+    await this.app.saveSettings();
+    toast('Redaction properties saved', 'ok');
+  }
   async applyRedactions() {
     const doc = this.doc;
     const marks = doc.allAnnots().filter((a) => a.type === 'redact');
     if (!marks.length) { toast('No redactions are marked.'); return; }
-    const c = await messageBox('Apply redactions', 'The marked content will be permanently removed from the document. Affected pages are rebuilt as images; the remaining text stays searchable.', ['Apply', 'Cancel'], { primary: 1 });
+    const c = await messageBox('Apply redactions', 'The marked content will be permanently removed from the document: text, images and graphics under the marks, and comments, links and form fields that overlap them. The rest of the page stays as it is.', ['Apply', 'Cancel'], { primary: 1 });
     if (c !== 0) return;
     if (!(await doc.allowEdit())) return;
     await doc.commitForms();
-    await busy('Applying redactions', async (progress) => {
-      await doc.mutate(async (bytes) => {
-        let out = bytes;
-        const pages = [...new Set(marks.map((a) => a.page))].sort((a, b) => a - b);
-        const invisible = [];
-        for (let k = 0; k < pages.length; k++) {
-          const p = pages[k];
-          const areas = marks.filter((a) => a.page === p).flatMap((a) => a.quads.map(rectFromQuad));
-          const { canvas, viewport } = await this.viewer.renderToCanvas(p, 200, { noAnnots: true });
-          const ctx = canvas.getContext('2d');
-          ctx.fillStyle = '#000';
-          for (const r of areas) {
-            const a = viewport.convertToViewportPoint(r[0], r[1]); const b = viewport.convertToViewportPoint(r[2], r[3]);
-            ctx.fillRect(Math.min(a[0], b[0]) - 1, Math.min(a[1], b[1]) - 1, Math.abs(a[0] - b[0]) + 2, Math.abs(a[1] - b[1]) + 2);
-          }
-          const jpeg = await canvasBytes(canvas, 'image/jpeg', 0.9);
-          canvas.width = 0;
-          const info = doc.pages[p];
-          const vp1 = doc.page(p).getViewport({ scale: 1 });
-          const rot0 = info.rotate === 0;
-          const [ox, oy] = [info.view[0], info.view[1]];
-          const words = wordBoxes(await doc.pageText(p)).filter((w) => !areas.some((r) => rectsOverlap(w.rect, r, 1)));
-          const mapped = [];
-          for (const w of words) {
-            const a = vp1.convertToViewportPoint(w.x, w.y);
-            const e = vp1.convertToViewportPoint(w.x + Math.cos(w.angle) * w.width, w.y + Math.sin(w.angle) * w.width);
-            if (Math.abs(a[1] - e[1]) > 1) continue;
-            mapped.push({ text: w.text, x: rot0 ? w.x : a[0], y: rot0 ? w.y : vp1.height - a[1], width: w.width, height: w.height });
-          }
-          invisible.push({ page: p, words: mapped });
-          out = await ops.replacePageWithImage(out, p, jpeg);
-          const list = doc.list(p).filter((a) => a.type !== 'redact' && !areas.some((r) => rectsOverlap(boundsOf(a), r)));
-          if (!rot0 || ox || oy) for (const a of list) this.remapAnnot(a, vp1, rot0);
-          doc.annots.set(p, list);
-          progress((k + 1) / pages.length, `Page ${k + 1} of ${pages.length}`);
+    const byPage = new Map();
+    for (const a of marks) {
+      if (!byPage.has(a.page)) byPage.set(a.page, []);
+      byPage.get(a.page).push(...a.quads.map((q) => ({ rect: rectFromQuad(q) })));
+    }
+    let report = null;
+    const ok = await busy('Applying redactions', () => doc.mutate(async (bytes) => {
+      // The words under the marks: document information and tags that repeat them are removed too.
+      const words = [];
+      for (const [p, list] of byPage) for (const w of wordBoxes(await doc.pageText(p))) if (list.some((m) => rectsOverlap(w.rect, m.rect, 1))) words.push(w.text);
+      const res = await redact.applyRedactions(bytes, byPage, { codec: imageCodec, removedText: words, look: this.redactLook() });
+      // Independent check with PDF.js: no text may be left under the marks.
+      const pdf = await pdfjs.getDocument({ data: res.bytes.slice(), ...RENDER_OPTS }).promise;
+      try {
+        for (const [p, list] of byPage) {
+          const left = wordBoxes(await (await pdf.getPage(p + 1)).getTextContent()).filter((w) => list.some((m) => { const cx = w.rect[0] + (w.rect[2] - w.rect[0]) / 2; const cy = w.rect[1] + (w.rect[3] - w.rect[1]) / 2; return cx > m.rect[0] && cx < m.rect[2] && cy > m.rect[1] && cy < m.rect[3]; }));
+          if (left.length) throw new Error(`The redaction could not be verified: text was still found under a mark on page ${p + 1}, so nothing was changed.`);
         }
-        return ops.addInvisibleText(out, invisible.filter((x) => x.words.length), readFont);
-      }, { skipCheck: true });
-    });
-    toast('Redactions applied. Please save.', 'ok');
+      } finally { pdf.loadingTask.destroy(); }
+      report = res.report;
+      return res.bytes;
+    }, { skipCheck: true }));
+    if (!ok || !report) return;
+    for (const [p, list] of byPage) doc.annots.set(p, doc.list(p).filter((a) => a.type !== 'redact' && !list.some((m) => rectsOverlap(boundsOf(a), m.rect))));
+    doc.fullSave = true;
+    doc.emit('reload', { annotOnly: true });
+    const parts = [`Text: ${report.glyphs} character(s)`, `images: ${report.imagesCleared} cleared, ${report.imagesRemoved} removed`, `graphics: ${report.paths}`];
+    if (report.annotations) parts.push(`comments, links and fields: ${report.annotations}`);
+    if (report.metadata.length) parts.push(`also removed from: ${report.metadata.join(', ')}`);
+    let note = '';
+    if (report.stillHolding?.bookmarks) note = `\n\nThe removed text still appears in ${report.stillHolding.bookmarks} bookmark title(s). Check them before passing the document on.`;
+    await messageBox('Redactions applied', `Removed on ${report.pages} page(s). ${parts.join('; ')}.${note}\n\nPlease save to keep the result.`);
   }
   remapAnnot(a, vp, rot0) {
     if (rot0) return;
@@ -888,18 +919,37 @@ export class Tools {
     toast('Export complete', 'ok');
     window.dp.reveal(p);
   }
+  /** Save as PDF/A: the document is checked against PDF/A-2b or -3b, converted where possible, and what remains is listed. */
   async pdfa() {
     const doc = this.doc;
-    const info = await ops.analyze(doc.bytes);
-    const missing = info.fonts.filter((f) => !f.embedded);
-    const c = await messageBox('Save as PDF/A', h('div', {}, 'The document receives the PDF/A-2b identification with an sRGB output profile. This does not include a certified ISO 19005 validation.', missing.length ? h('p', { style: { color: 'var(--danger)' } }, `Fonts that are not embedded (${missing.map((f) => f.name).join(', ')}) violate the standard.`) : null, info.transparency ? h('p', {}, 'Note: The document contains transparency. PDF/A-2 allows this.') : null), ['Next', 'Cancel'], { primary: 0 });
-    if (c !== 0) return;
+    const r = await formDialog('Save as PDF/A', [
+      { k: 'level', label: 'Standard', type: 'select', options: pdfa.LEVELS, value: this.app.settings.pdfaLevel || '2b' },
+      { type: 'info', label: 'The document is checked against the standard and converted where this does not change how the pages look (identification, colour profile, scripts and actions, comments, image settings). Problems that remain, such as fonts that are not embedded, are listed before saving. This is not a certified validation.' },
+    ], { ok: 'Convert' });
+    if (!r) return;
+    this.app.settings.pdfaLevel = r.level; await this.app.saveSettings();
+    const icc = await window.dp.srgbIcc();
+    const res = await busy('Converting to PDF/A', async () => pdfa.convertPdfA(await doc.buildOutput({ noEncrypt: true }), r.level, icc, fileBase(doc.name)));
+    const label = pdfa.LEVELS.find(([k]) => k === r.level)[1];
+    const body = h('div', {},
+      h('p', {}, res.remaining.length ? `${label}: ${res.remaining.length} problem(s) could not be fixed. The file can be saved, but it does not meet the standard.` : `The document meets the checked rules of ${label}.`),
+      res.remaining.length ? h('ul', { class: 'pdfa-issues' }, res.remaining.map((i) => h('li', {}, `${i.message} (clause ${i.clause})`))) : null,
+      res.fixed.length ? h('details', {}, h('summary', {}, `Fixed (${res.fixed.length})`), h('ul', {}, res.fixed.map((t) => h('li', {}, t)))) : null);
+    if (await messageBox('Save as PDF/A', body, ['Save', 'Cancel'], { primary: 0 }) !== 0) return;
     const p = await window.dp.saveDialog({ title: 'Save PDF/A', defaultPath: doc.suggestedPath('_PDFA') });
     if (!p) return;
-    const icc = await window.dp.srgbIcc();
-    const out = await ops.toPdfA(await doc.buildOutput({ noEncrypt: true }), icc, fileBase(doc.name));
-    await window.dp.writeFile(p, out);
-    toast('PDF/A saved', 'ok');
+    await window.dp.writeFile(p, res.bytes);
+    toast(`${label} saved`, 'ok');
+  }
+
+  /** Checks the document against PDF/A-2b and -3b without changing it. */
+  async pdfaCheck() {
+    const doc = this.doc;
+    const bytes = await doc.buildOutput({ noEncrypt: true });
+    const [a2, a3] = await busy('Checking PDF/A', async () => [await pdfa.verifyPdfA(bytes, '2b'), await pdfa.verifyPdfA(bytes, '3b')]);
+    const list = (title, issues) => h('div', {}, h('h4', {}, `${title}: ${issues.length ? `${issues.length} problem(s)` : 'no problems found'}`),
+      issues.length ? h('ul', { class: 'pdfa-issues' }, issues.map((i) => h('li', {}, `${i.message} (clause ${i.clause}${i.fixable ? ', fixed by Save as PDF/A' : ''})`))) : null);
+    await messageBox('PDF/A check', h('div', {}, list('PDF/A-2b', a2), list('PDF/A-3b', a3)), ['OK'], { wide: true });
   }
 
   // --- Create PDF ----------------------------------------------------------------------
@@ -971,28 +1021,75 @@ export class Tools {
   }
 
   // --- Compress -----------------------------------------------------------------------
+  /** Reduce file size with ready-made settings. */
   async compress() {
     const doc = this.doc;
     if (!doc) { toast('Please open a document first.'); return; }
-    const r = await formDialog('Compress PDF', [{ k: 'level', label: 'Quality', type: 'select', options: [['high', 'High quality (small savings)'], ['mid', 'Medium (recommended)'], ['low', 'Low quality (smallest file)']], value: 'mid' }], { ok: 'Compress' });
+    const r = await formDialog('Reduce file size', [
+      { k: 'level', label: 'Settings', type: 'select', options: [['standard', 'Standard (recommended): images to 150 ppi'], ['mobile', 'Mobile (smallest, for screens): images to 96 ppi'], ['high', 'High quality (printing): images to 300 ppi']], value: 'standard' },
+      { type: 'info', label: 'Images are reduced to the resolution at which the pages show them, black-and-white scans are stored as Group 4, and unused data is removed. Text and graphics stay as they are.' },
+    ], { ok: 'Compress' });
     if (!r) return;
-    const L = { high: [2800, 0.85], mid: [1800, 0.72], low: [1100, 0.55] }[r.level];
+    await this.runOptimizer(optimize.PRESETS[r.level] || optimize.PRESETS.standard);
+  }
+
+  /** Advanced optimization: every setting of the optimizer; the last choice is remembered. */
+  async compressAdvanced() {
+    if (!this.doc) { toast('Please open a document first.'); return; }
+    const s = { ...optimize.PRESETS.standard, ...(this.app.settings.optimize || {}) };
+    const comp = [['jpeg', 'JPEG'], ['flate', 'Lossless (Flate)'], ['retain', 'Keep']];
+    const quality = [[25, 'Minimum'], [45, 'Low'], [60, 'Medium'], [80, 'High'], [95, 'Maximum']];
+    const imageFields = (key, label) => [
+      { type: 'info', label },
+      { k: `${key}Down`, label: 'Reduce resolution', type: 'checkbox', value: s[key].downsample },
+      { k: `${key}Target`, label: 'To (ppi)', type: 'number', value: s[key].target, min: 36, max: 2400 },
+      { k: `${key}Above`, label: 'For images above (ppi)', type: 'number', value: s[key].above, min: 36, max: 3600 },
+      ...(key === 'mono' ? [{ k: 'monoComp', label: 'Compression', type: 'select', options: [['g4', 'CCITT Group 4 (lossless)'], ['retain', 'Keep']], value: s.mono.compression }]
+        : [{ k: `${key}Comp`, label: 'Compression', type: 'select', options: comp, value: s[key].compression }, { k: `${key}Quality`, label: 'JPEG quality', type: 'select', options: quality, value: s[key].quality }]),
+    ];
+    const r = await formDialog('Advanced optimization', [
+      ...imageFields('color', 'Colour images'), ...imageFields('gray', 'Greyscale images'), ...imageFields('mono', 'Black-and-white images'),
+      { type: 'info', label: 'Discard' },
+      { k: 'discardThumbnails', label: 'Page thumbnails', type: 'checkbox', value: s.discardThumbnails },
+      { k: 'discardAlternates', label: 'Alternate images', type: 'checkbox', value: s.discardAlternates },
+      { k: 'discardTags', label: 'Document tags (accessibility structure)', type: 'checkbox', value: s.discardTags },
+      { k: 'discardFormActions', label: 'Form submission, import and reset actions', type: 'checkbox', value: s.discardFormActions },
+      { k: 'discardPrintSettings', label: 'Print settings', type: 'checkbox', value: s.discardPrintSettings },
+      { k: 'discardExternalRefs', label: 'Links to other documents and programs', type: 'checkbox', value: s.discardExternalRefs },
+      { k: 'discardSearchIndex', label: 'Embedded search index', type: 'checkbox', value: s.discardSearchIndex },
+      { type: 'info', label: 'Clean up' },
+      { k: 'removeUnused', label: 'Remove images and forms the pages never draw', type: 'checkbox', value: s.removeUnused },
+      { k: 'removeInvalidLinks', label: 'Remove links to pages that do not exist', type: 'checkbox', value: s.removeInvalidLinks },
+      { k: 'flateUnencoded', label: 'Compress uncompressed data', type: 'checkbox', value: s.flateUnencoded },
+      { k: 'lzwToFlate', label: 'Store LZW-compressed data with Flate', type: 'checkbox', value: s.lzwToFlate },
+    ], { ok: 'Optimize', wide: true });
+    if (!r) return;
+    const img = (key) => ({ downsample: !!r[`${key}Down`], target: +r[`${key}Target`], above: Math.max(+r[`${key}Above`], +r[`${key}Target`]), compression: r[`${key}Comp`], quality: +r[`${key}Quality`] || 60 });
+    const settings = {
+      color: img('color'), gray: img('gray'), mono: { downsample: !!r.monoDown, target: +r.monoTarget, above: Math.max(+r.monoAbove, +r.monoTarget), compression: r.monoComp },
+      ...Object.fromEntries(['discardThumbnails', 'discardAlternates', 'discardTags', 'discardFormActions', 'discardPrintSettings', 'discardExternalRefs', 'discardSearchIndex', 'removeUnused', 'removeInvalidLinks', 'flateUnencoded', 'lzwToFlate'].map((k) => [k, !!r[k]])),
+    };
+    this.app.settings.optimize = settings; await this.app.saveSettings();
+    await this.runOptimizer(settings);
+  }
+
+  async runOptimizer(settings) {
+    const doc = this.doc;
     const before = doc.bytes.length;
-    let images = 0;
-    const ok = await busy('Compressing PDF', () => this.mutate(async (b) => {
-      const res = await ops.optimize(b, {}, async (info) => {
-        try {
-          const bmp = await createImageBitmap(new Blob([info.bytes], { type: 'image/jpeg' }));
-          const s = Math.min(1, L[0] / Math.max(bmp.width, bmp.height));
-          const c = document.createElement('canvas'); c.width = Math.max(1, Math.round(bmp.width * s)); c.height = Math.max(1, Math.round(bmp.height * s));
-          c.getContext('2d', { alpha: false }).drawImage(bmp, 0, 0, c.width, c.height);
-          return { bytes: await canvasBytes(c, 'image/jpeg', L[1]), width: c.width, height: c.height };
-        } catch { return null; }
-      });
-      images = res.images;
+    let report = null;
+    const ok = await busy('Compressing PDF', (progress) => this.mutate(async (b) => {
+      const res = await optimize.optimizePdf(b, settings, { codec: imageCodec, progress });
+      report = res.report;
       return res.bytes;
     }));
-    if (ok) await messageBox('PDF compressed', `Before: ${fmtSize(before)}\nAfter: ${fmtSize(doc.bytes.length)}\nRecompressed images: ${images}\n\nPlease save to keep the result.`);
+    if (!ok || !report) return;
+    // The next save writes the whole file again, or the old data would stay in it.
+    doc.fullSave = true;
+    const lines = [`Before: ${fmtSize(before)}`, `After: ${fmtSize(doc.bytes.length)}`, `Images: ${report.resampled} reduced, ${report.recompressed} recompressed (of ${report.images})`];
+    const more = [[report.unused, 'unused images and forms removed'], [report.thumbnails, 'page thumbnails removed'], [report.invalidLinks, 'invalid links removed'], [report.streamsCompressed + report.lzwConverted, 'data streams compressed'], [report.formActions, 'form actions removed'], [report.externalRefs, 'links to other documents removed']].filter(([n]) => n);
+    for (const [n, t] of more) lines.push(`${n} ${t}`);
+    if (report.tags) lines.push('Document tags removed');
+    await messageBox('PDF compressed', `${lines.join('\n')}\n\nPlease save to keep the result.`);
   }
 
   // --- Measure -----------------------------------------------------------------------------

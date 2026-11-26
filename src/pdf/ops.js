@@ -4,10 +4,32 @@ import {
   StandardFonts, rgb, degrees, pushGraphicsState, popGraphicsState, concatTransformationMatrix,
   beginText, endText, setFontAndSize, showText, setTextMatrix, setTextRenderingMode, TextRenderingMode,
   PDFBool, PDFNull, setLineWidth, setStrokingColor, setCharacterSqueeze, PDFOperator,
+  PDFTextField, PDFCheckBox, PDFRadioGroup, PDFDropdown, PDFOptionList, PDFButton, PDFSignature,
 } from '@cantoo/pdf-lib';
 import fontkit from '@cantoo/fontkit';
+import * as organize from './organize.js';
 
 export const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+
+/**
+ * Adds an annotation to a page without pdf-lib's normalisation (which wraps the page content in q/Q and adds
+ * resource dictionaries): only /Annots changes, so a signed page stays as it was signed.
+ */
+export function addAnnotTo(page, ref) {
+  const node = page.node;
+  const a = node.lookup(PDFName.of('Annots'));
+  if (a instanceof PDFArray) a.push(ref);
+  else node.set(PDFName.of('Annots'), node.context.obj([ref]));
+}
+
+/**
+ * The kind of a pdf-lib form field: 'PDFTextField', 'PDFCheckBox', 'PDFRadioGroup', 'PDFDropdown', 'PDFOptionList',
+ * 'PDFButton', 'PDFSignature' (by class, not by constructor name, which the minified build changes).
+ */
+export function fieldKind(f) {
+  for (const [C, n] of [[PDFTextField, 'PDFTextField'], [PDFCheckBox, 'PDFCheckBox'], [PDFRadioGroup, 'PDFRadioGroup'], [PDFDropdown, 'PDFDropdown'], [PDFOptionList, 'PDFOptionList'], [PDFButton, 'PDFButton'], [PDFSignature, 'PDFSignature']]) if (f instanceof C) return n;
+  return 'PDFField';
+}
 
 export async function loadDoc(bytes, password) {
   const opts = { updateMetadata: false, throwOnInvalidObject: false };
@@ -123,20 +145,21 @@ export function duplicatePages(bytes, idx) {
     const n = d.getPageCount();
     const sorted = [...new Set(idx)].sort((a, b) => b - a);
     const map = identityMap(n);
-    const copies = await d.copyPages(d, sorted);
-    sorted.forEach((i, k) => { d.insertPage(i + 1, copies[k]); map.splice(i + 1, 0, i); });
+    await organize.duplicate(d, await loadForEdit(bytes), sorted);
+    sorted.forEach((i) => { map.splice(i + 1, 0, i); });
     return { pageMap: map };
   });
 }
 
-export function insertPdf(bytes, other, at, pages, otherPassword) {
+/** Inserts pages of another PDF; its bookmarks come along under one bookmark titled after the file. */
+export function insertPdf(bytes, other, at, pages, otherPassword, title = 'Inserted pages') {
   return edit(bytes, async (d) => {
     const src = await loadDoc(other, otherPassword === undefined ? '' : otherPassword);
     const idx = pages || src.getPageIndices();
-    const copied = await d.copyPages(src, idx);
     const map = identityMap(d.getPageCount());
-    copied.forEach((p, k) => { d.insertPage(at + k, p); map.splice(at + k, 0, -1); });
-    return { pageMap: map };
+    const r = organize.insertFile(d, src, title, idx, at);
+    map.splice(at, 0, ...idx.map(() => -1));
+    return { pageMap: map, renamed: r.renamed };
   });
 }
 
@@ -144,31 +167,31 @@ export function replacePages(bytes, startIdx, count, other, otherPages) {
   return edit(bytes, async (d) => {
     const src = await loadDoc(other, '');
     const idx = otherPages || src.getPageIndices();
-    const copied = await d.copyPages(src, idx);
     const n = d.getPageCount();
-    for (let i = 0; i < count; i++) d.removePage(startIdx);
-    copied.forEach((p, k) => d.insertPage(startIdx + k, p));
-    const map = identityMap(n); map.splice(startIdx, count, ...copied.map(() => -1));
+    organize.importKeepingNames(d, src, idx, startIdx);
+    for (let i = 0; i < count; i++) d.removePage(startIdx + idx.length);
+    const map = identityMap(n); map.splice(startIdx, count, ...idx.map(() => -1));
     return { pageMap: map };
   });
 }
 
+/** A new PDF with copies of these pages: links, fields, layers, bookmarks and page labels come along. */
 export async function extractPages(bytes, idx) {
-  const src = await loadForEdit(bytes);
-  const d = await PDFDocument.create();
-  (await d.copyPages(src, idx)).forEach((p) => d.addPage(p));
-  return saveDoc(d);
+  return saveDoc(await organize.extract(await loadForEdit(bytes), idx));
 }
 
-export async function mergePdfs(list) {
-  const d = await PDFDocument.create();
-  d.registerFontkit(fontkit);
-  for (const item of list) {
-    const src = await loadDoc(item.bytes, item.password === undefined ? '' : item.password);
-    const idx = item.pages || src.getPageIndices();
-    (await d.copyPages(src, idx)).forEach((p) => d.addPage(p));
-  }
-  return saveDoc(d);
+/**
+ * Combines PDFs: list of {bytes, password?, pages?, title?}. Every file gets a bookmark with its own bookmarks
+ * below it; fields whose names are taken are renamed. Returns the bytes, with o.report {bytes, renamed}.
+ */
+export async function mergePdfs(list, o = {}) {
+  const sources = [];
+  for (const [i, item] of list.entries()) sources.push({ title: item.title || `Document ${i + 1}`, doc: await loadDoc(item.bytes, item.password === undefined ? '' : item.password), pages: item.pages });
+  const { doc, renamed } = await organize.combine(sources);
+  doc.registerFontkit(fontkit);
+  const out = await saveDoc(doc);
+  if (o.report) return { bytes: out, renamed };
+  return out;
 }
 
 /** ranges: array of page lists, one output file each */
@@ -539,7 +562,7 @@ export function addLink(bytes, pageIdx, rect, target) {
       ...(target.page !== undefined ? { Dest: [d.getPage(target.page).ref, PDFName.of('Fit')] } : {}),
     });
     if (target.url) annot.set(PDFName.of('A'), ctx.obj({ S: 'URI', URI: PDFString.of(target.url) }));
-    page.node.addAnnot(ctx.register(annot));
+    addAnnotTo(page, ctx.register(annot));
   });
 }
 
@@ -954,7 +977,7 @@ export function toPdfA(bytes, icc, title) {
   });
 }
 
-/** Preflight-artige Analyse eines Dokuments. */
+/** Preflight-style analysis of a document. */
 export async function analyze(bytes) {
   const d = await loadForEdit(bytes);
   const ctx = d.context;
@@ -1051,7 +1074,7 @@ function placeField(d, font, pageIdx, rect, o) {
       case 'signature': {
         const ctx = d.context;
         const widget = ctx.register(ctx.obj({ Type: 'Annot', Subtype: 'Widget', FT: 'Sig', Rect: rect, T: PDFHexString.fromText(name), F: 4, P: page.ref }));
-        page.node.addAnnot(widget);
+        addAnnotTo(page, widget);
         form.acroForm.addField(widget);
         return;
       }
@@ -1089,7 +1112,7 @@ export async function listFormFields(bytes) {
   const form = d.getForm();
   const pages = d.getPages();
   return form.getFields().map((f) => {
-    const type = f.constructor.name.replace('PDF', '');
+    const type = fieldKind(f).replace('PDF', '');
     const w = widgetsOf(f)[0];
     let page = -1;
     if (w) {
@@ -1118,7 +1141,7 @@ export async function exportFormData(bytes) {
   const d = await loadForEdit(bytes);
   const out = {};
   for (const f of d.getForm().getFields()) {
-    const t = f.constructor.name;
+    const t = fieldKind(f);
     if (t === 'PDFTextField') out[f.getName()] = f.getText() || '';
     else if (t === 'PDFCheckBox') out[f.getName()] = f.isChecked();
     else if (t === 'PDFRadioGroup') out[f.getName()] = f.getSelected() || '';
@@ -1131,7 +1154,7 @@ export const importFormData = (bytes, data) => edit(bytes, async (d) => {
   for (const [k, v] of Object.entries(data)) {
     const f = form.getFieldMaybe(k);
     if (!f) continue;
-    const t = f.constructor.name;
+    const t = fieldKind(f);
     if (t === 'PDFTextField') f.setText(String(v ?? ''));
     else if (t === 'PDFCheckBox') (v === true || v === 'true' || v === 'Yes' ? f.check() : f.uncheck());
     else if (t === 'PDFRadioGroup') { if (v) f.select(String(v)); else f.clear(); }
@@ -1142,7 +1165,7 @@ export const importFormData = (bytes, data) => edit(bytes, async (d) => {
 export const resetForm = (bytes) => edit(bytes, async (d) => {
   const form = d.getForm();
   for (const f of form.getFields()) {
-    const t = f.constructor.name;
+    const t = fieldKind(f);
     if (t === 'PDFTextField') f.setText('');
     else if (t === 'PDFCheckBox') f.uncheck();
     else if (t === 'PDFRadioGroup' || t === 'PDFDropdown' || t === 'PDFOptionList') f.clear();

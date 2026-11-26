@@ -126,13 +126,13 @@ jobs:
       - name: Core tests
         run: npm run test:core 2>&1 | tee core-tests.log; exit "${PIPESTATUS[0]}"
 
-      # Two steps depend on things the GitHub runners do not have (the Office cloud font Aptos, and text
-      # recognition results that differ slightly there). They are skipped here and run in the normal test run.
+      # One step depends on text recognition results that differ slightly on the GitHub runners. It is skipped
+      # here and runs in the normal test run.
       - name: App tests
         if: ${{ !cancelled() }}
         timeout-minutes: 50
         env:
-          DP_SKIP_STEPS: '^(Move text over text|Scan in strips)'
+          DP_SKIP_STEPS: '^Scan in strips'
         run: npm test 2>&1 | tee app-tests.log; exit "${PIPESTATUS[0]}"
 
       - name: Report test results

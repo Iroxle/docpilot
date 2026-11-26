@@ -125,6 +125,8 @@ export function formDialog(title, fields, opts = {}) {
       inputs[f.k] = inp;
       return h('label', { class: `fr ${f.type === 'checkbox' ? 'chk' : ''}` }, h('span', {}, f.label), inp);
     });
+    // Rows shown only for some choices: showIf(values).
+    const update = () => { const v = read(); fields.forEach((f, i) => { if (f.showIf) rows[i].hidden = !f.showIf(v); }); };
     const err = h('div', { class: 'err' });
     const read = () => Object.fromEntries(fields.filter((f) => f.k && inputs[f.k]).map((f) => {
       const i = inputs[f.k];
@@ -143,6 +145,7 @@ export function formDialog(title, fields, opts = {}) {
       h('h3', {}, title), h('div', { class: 'b' }, rows, err),
       h('div', { class: 'f' }, h('button', { class: 'btn', type: 'button', onclick: () => close(null) }, 'Cancel'), h('button', { class: 'btn primary', type: 'submit', 'data-ok': '1' }, opts.ok || 'OK')));
     const s = scrim(h('div', { class: `dlg ${opts.wide ? 'wide' : ''}`, role: 'dialog' }, form), () => close(null));
+    if (fields.some((f) => f.showIf)) { form.addEventListener('input', update); form.addEventListener('change', update); update(); }
     setTimeout(() => { const first = $('input,select,textarea', s); if (first) { first.focus(); if (first.select) first.select(); } }, 10);
   });
 }
@@ -179,3 +182,22 @@ export async function normalizeImage(bytes, name) {
   c.getContext('2d').drawImage(bmp, 0, 0);
   return { bytes: await canvasBytes(c, 'image/png'), mime: 'image/png' };
 }
+
+/** Decodes and encodes JPEG images with the browser, for the PDF code (redaction, compression). */
+export const imageCodec = {
+  async decodeJpeg(bytes) {
+    const bmp = await createImageBitmap(new Blob([bytes], { type: 'image/jpeg' }));
+    const c = new OffscreenCanvas(bmp.width, bmp.height);
+    const g = c.getContext('2d', { willReadFrequently: true });
+    g.drawImage(bmp, 0, 0);
+    bmp.close();
+    const d = g.getImageData(0, 0, c.width, c.height);
+    return { width: d.width, height: d.height, data: d.data };
+  },
+  async encodeJpeg(rgba, width, height, quality = 0.85) {
+    const c = new OffscreenCanvas(width, height);
+    c.getContext('2d').putImageData(new ImageData(rgba, width, height), 0, 0);
+    const b = await c.convertToBlob({ type: 'image/jpeg', quality });
+    return new Uint8Array(await b.arrayBuffer());
+  },
+};

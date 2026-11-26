@@ -5,7 +5,8 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const assert = require('assert');
-const { PDFDocument, StandardFonts, rgb } = require('@cantoo/pdf-lib');
+const { PDFDocument, StandardFonts, rgb, PDFName, PDFDict, decodePDFRawStream } = require('@cantoo/pdf-lib');
+const fontkit = require('@cantoo/fontkit');
 const JSZip = require('jszip');
 
 const root = path.join(__dirname, '..');
@@ -34,6 +35,38 @@ async function makeFixture(name, pages = 4) {
   const t = form.createTextField('vorname');
   t.addToPage(d.getPage(0), { x: 72, y: 300, width: 200, height: 24, font: f });
   fs.writeFileSync(file(name), await d.save());
+  return file(name);
+}
+
+/**
+ * Invoice in the style of an online invoice: labels and values in two columns (the dates form a paragraph of their own
+ * that lies within the one of the labels), a value that wraps, and an address. Values and address are in an embedded
+ * font (Liberation Sans from PDF.js) whose ToUnicode map leaves "-" and ":" empty, as Chrome does for raised hyphens.
+ */
+async function invoiceFixture(name) {
+  const d = await PDFDocument.create(); d.registerFontkit(fontkit);
+  const lib = (f) => fs.readFileSync(path.join(root, 'node_modules', 'pdfjs-dist', 'standard_fonts', f));
+  const reg = await d.embedFont(lib('LiberationSans-Regular.ttf'), { subset: true }); const bold = await d.embedFont(lib('LiberationSans-Bold.ttf'), { subset: true });
+  const hb = await d.embedFont(StandardFonts.HelveticaBold); const h = await d.embedFont(StandardFonts.Helvetica);
+  const pg = d.addPage([595, 842]);
+  const t = (s, x, y, font, size = 9) => pg.drawText(s, { x, y, size, font });
+  t('Invoice', 30, 744, hb, 18);
+  t('Invoice number', 30, 711.75, hb); t('INV-0042', 108, 711.75, bold);
+  t('Date of issue', 30, 698.25, h); t('November 21, 2026', 108, 698.25, reg);
+  t('Date due', 30, 684.75, h); t('November 21, 2026', 108, 684.75, reg);
+  t('VAT Registration', 30, 671.25, h); t('Sample VAT: CHE-', 108, 671.25, reg);
+  t('123.456.789 MWST', 108, 657.75, reg);
+  t('Bill to', 250, 629.25, hb);
+  ['Example Ltd', 'Main Street 1', 'CH-1234 Sample Town', 'Switzerland'].forEach((s, k) => t(s, 250, 612.75 - k * 13.5, reg));
+  const d2 = await PDFDocument.load(await d.save());
+  const fontDicts = d2.getPage(0).node.Resources().lookup(PDFName.of('Font'), PDFDict);
+  for (const [, ref] of fontDicts.entries()) {
+    const tuRef = d2.context.lookup(ref, PDFDict).get(PDFName.of('ToUnicode'));
+    if (!tuRef) continue;
+    const cmap = Buffer.from(decodePDFRawStream(d2.context.lookup(tuRef)).decode()).toString('latin1').replace(/^(<[0-9a-f]+>\s+)<(002d|003a)>$/gim, '$1<0000>');
+    d2.context.assign(tuRef, d2.context.flateStream(Buffer.from(cmap, 'latin1')));
+  }
+  fs.writeFileSync(file(name), await d2.save());
   return file(name);
 }
 
@@ -373,6 +406,10 @@ async function makeFixture(name, pages = 4) {
     await page.evaluate(() => { window.__app.tools.applyRedactions(); });
     await page.waitForSelector('.scrim'); await page.click('.scrim .btn:not(.primary)');
     await wait(400); await idle(); await wait(400);
+    // The report of what was removed.
+    await page.waitForSelector('.scrim h3:has-text("Redactions applied")');
+    assert.match(await page.textContent('.scrim .b'), /Removed on 4 page\(s\)\. Text: \d+ character/);
+    await page.click('.scrim .btn.primary');
     const buf = await saveAs('a-redact.pdf');
     assert.ok(!buf.includes('Secret'), 'word not in raw data');
     const pdf = await open(buf);
@@ -415,6 +452,27 @@ async function makeFixture(name, pages = 4) {
     await rendered(); await page.waitForSelector('.cm .badge');
     assert.match(await page.$eval('.cm .badge', (e) => e.textContent), /Valid/);
     await wait(100); await shot('11-signature');
+    // A second signature is appended: the first stays valid and reports the permitted change.
+    const first = fs.readFileSync(file('a-sig.pdf'));
+    await setDialogs({ save: file('a-sig2.pdf'), open: [file('id.pfx')] });
+    await page.evaluate(() => { window.__app.tools.digitalSign(null); });
+    await dialog({ password: 'test123', reason: 'Seen' });
+    await page.waitForFunction(() => window.__app.doc?.name === 'a-sig2.pdf', null, { timeout: 60000 });
+    await rendered(); await page.waitForFunction(() => document.querySelectorAll('.cm[data-sig]').length === 2, null, { timeout: 30000 });
+    const second = fs.readFileSync(file('a-sig2.pdf'));
+    assert.ok(second.subarray(0, first.length).equals(first), 'the signed file stays as it was, the second signature is appended');
+    const badges = await page.$$eval('.cm[data-sig] .badge', (e) => e.map((x) => x.textContent));
+    assert.ok(badges.every((b) => /Valid/.test(b)), `both signatures valid: ${badges}`);
+    assert.match(await page.$eval('.cm[data-sig="0"] [data-changes]', (e) => e.textContent), /permitted: signatures/);
+    // A comment on the signed document is saved by appending as well (Save to the same file).
+    await page.evaluate(() => window.__app.overlay.add({ type: 'note', page: 0, rect: [500, 700, 520, 720], contents: 'Checked', color: [1, 0.8, 0] }));
+    await page.evaluate(() => window.__app.save()); await idle();
+    await page.waitForFunction(() => !window.__app.doc.dirty, null, { timeout: 30000 }); await wait(300);
+    const third = fs.readFileSync(file('a-sig2.pdf'));
+    assert.ok(third.length > second.length && third.subarray(0, second.length).equals(second), 'saved incrementally');
+    await page.evaluate(() => window.__app.panels.show('signatures')); await wait(300);
+    await page.waitForFunction(() => /comments/.test(document.querySelector('.cm[data-sig="1"] [data-changes]')?.textContent || ''), null, { timeout: 30000 });
+    assert.ok((await page.$$eval('.cm[data-sig] .badge', (e) => e.map((x) => x.textContent))).every((b) => /Valid/.test(b)));
     await closeAll();
   });
   step('Set up and place signature', async () => {
@@ -490,8 +548,10 @@ async function makeFixture(name, pages = 4) {
   step('Compress, compare, measure, reports', async () => {
     await openFile(file('a.pdf'));
     await page.evaluate(() => { window.__app.tools.compress(); });
-    await dialog({ level: 'mid' });
-    await page.waitForSelector('.scrim .btn.primary'); await page.click('.scrim .btn.primary'); await wait(200);
+    await dialog({ level: 'standard' });
+    await page.waitForSelector('.scrim h3:has-text("PDF compressed")');
+    assert.match(await page.textContent('.scrim .b'), /Before: .*\nAfter: /s);
+    await page.click('.scrim .btn.primary'); await wait(200);
     await page.evaluate(() => { window.__app.doc.dirty = false; });
     await closeAll();
     await openFile(file('a-wm.pdf'));
@@ -573,6 +633,7 @@ async function makeFixture(name, pages = 4) {
     await page.evaluate(() => { window.__app.tools.applyRedactions(); });
     await page.waitForSelector('.scrim'); await page.click('.scrim .btn:not(.primary)');
     await wait(400); await idle(); await wait(500);
+    await page.waitForSelector('.scrim h3:has-text("Redactions applied")'); await page.click('.scrim .btn.primary');
     buf = await saveAs('c-redact.pdf');
     t = await allText(await open(buf));
     assert.doesNotMatch(t, /Anfrage/); assert.match(t, /Offerte/);
@@ -758,7 +819,8 @@ async function makeFixture(name, pages = 4) {
     assert.ok(fs.existsSync(file('a_Part1.pdf')) && fs.existsSync(file('a_Part2.pdf')));
     assert.equal((await open(fs.readFileSync(file('a_Part2.pdf')))).numPages, 2);
     await setDialogs({ save: file('a-pdfa.pdf') });
-    await page.evaluate(() => { window.__t = window.__app.tools.pdfa(); }); await page.waitForSelector('.scrim'); await page.click('.scrim .btn.primary'); await page.evaluate(() => window.__t); await wait(200);
+    await page.evaluate(() => { window.__t = window.__app.tools.pdfa(); }); await page.waitForSelector('.scrim'); await page.click('.scrim .btn.primary');
+    await page.waitForSelector('.scrim h3:has-text("Save as PDF/A") ~ .b p'); await page.click('.scrim .btn.primary'); await page.evaluate(() => window.__t); await wait(200);
     assert.ok(fs.readFileSync(file('a-pdfa.pdf')).includes('pdfaid') || (await open(fs.readFileSync(file('a-pdfa.pdf')))).numPages === 4);
     await closeAll();
   });
@@ -987,6 +1049,68 @@ async function makeFixture(name, pages = 4) {
     await page.evaluate(async () => { const a = window.__app; a.settings = { ...a.settings, jsEnabled: false }; await a.saveSettings(); await a.scripting.detach(); });
     await closeAll();
   });
+  step('Forms without JavaScript: formats, calculations, value ranges, field properties, data exchange', async () => {
+    const { PDFName, PDFString } = require('@cantoo/pdf-lib');
+    const d = await PDFDocument.create(); const f = await d.embedFont(StandardFonts.Helvetica);
+    const pg = d.addPage([595, 842]); pg.drawText('Order', { x: 72, y: 760, size: 14, font: f });
+    const form = d.getForm(); const ctx = d.context;
+    const js = (s) => ctx.obj({ S: 'JavaScript', JS: PDFString.of(s) });
+    const mk = (n, y, aa) => { const t2 = form.createTextField(n); t2.addToPage(pg, { x: 72, y, width: 160, height: 22, font: f }); if (aa) t2.acroField.dict.set(PDFName.of('AA'), ctx.obj(aa)); return t2; };
+    const money = 'AFNumber_Format(2, 4, 0, 0, " CHF", false);';
+    mk('Qty', 700); mk('Price', 660, { F: js(money), K: js(money.replace('Format', 'Keystroke')) });
+    const total = mk('Total', 620, { F: js(money), C: js('AFSimple_Calculate("PRD", new Array("Qty", "Price"));') });
+    mk('Discount', 580, { V: js('AFRange_Validate(true, 0, true, 100);') });
+    form.acroForm.dict.set(PDFName.of('CO'), ctx.obj([total.acroField.ref]));
+    fs.writeFileSync(file('order.pdf'), await d.save());
+    await openFile(file('order.pdf'));
+    await page.waitForSelector('.annotationLayer input');
+    const values = () => page.$$eval('.annotationLayer input', (e) => e.map((v2) => v2.value));
+    const inputs = await page.$$('.annotationLayer input');
+    await inputs[0].click(); await page.keyboard.type('3'); await page.keyboard.press('Tab');
+    await page.keyboard.type("1'250.5"); await page.keyboard.press('Tab');
+    // The calculated field shows its plain value while it has the focus, formatted once it loses it.
+    assert.equal((await values())[2], '3751.5');
+    await page.keyboard.press('Tab'); await wait(500);
+    let v = await values();
+    assert.deepEqual(v.slice(0, 3), ['3', "1'250.50 CHF", "3'751.50 CHF"], `formatted and calculated without JavaScript: ${v}`);
+    // A value out of range is refused with a message.
+    await inputs[3].click(); await page.keyboard.type('150'); await page.keyboard.press('Tab');
+    await page.waitForSelector('.scrim'); assert.match(await page.textContent('.scrim .b'), /less than or equal to 100/);
+    await page.click('.scrim .btn.primary'); await wait(200);
+    v = await values();
+    assert.equal(v[3], '', 'the value out of range is not kept');
+    // Saved: the values, and the appearance shows the formatted amount.
+    let buf = await saveAs('order-filled.pdf');
+    let out = await PDFDocument.load(buf);
+    assert.equal(out.getForm().getTextField('Total').getText(), '3751.5');
+    const ap = out.getForm().getTextField('Total').acroField.getWidgets()[0].getNormalAppearance();
+    assert.match(Buffer.from(decodePDFRawStream(out.context.lookup(ap)).decode()).toString('latin1'), /3'751\.50 CHF/);
+    // Field properties: a percentage format for the discount, written as a standard script.
+    await page.evaluate(() => { window.__app.tools.openGroup('form'); });
+    await page.evaluate((n) => { window.__app.tools.fieldPropertiesFor(n); }, 'Discount');
+    await page.waitForSelector('.scrim [data-field="format"]');
+    await page.selectOption('.scrim [data-field="format"]', 'percent');
+    await page.fill('.scrim [data-field="decimals"]', '1');
+    await ok();
+    buf = await saveAs('order-props.pdf');
+    out = await PDFDocument.load(buf);
+    const aa = out.getForm().getTextField('Discount').acroField.dict.lookup(PDFName.of('AA'));
+    const script = (k) => { const a = aa.lookup(PDFName.of(k)); return a ? a.lookup(PDFName.of('JS')).decodeText() : ''; };
+    assert.match(script('F'), /AFPercent_Format\(1, 0\)/); assert.match(script('V'), /AFRange_Validate/);
+    // Form data as XFDF and back from CSV.
+    await setDialogs({ save: file('order.xfdf') });
+    await page.evaluate(() => { window.__app.tools.exportForm(); });
+    await dialog({ format: 'xfdf' }); await wait(300);
+    assert.match(fs.readFileSync(file('order.xfdf'), 'utf8'), /<field name="Total">\s*<value>3751\.5<\/value>/);
+    fs.writeFileSync(file('order.csv'), 'Qty,Price\r\n5,10\r\n');
+    await setDialogs({ open: [file('order.csv')] });
+    await page.evaluate(() => { window.__app.tools.importForm(); }); await idle(); await wait(400);
+    buf = await saveAs('order-csv.pdf');
+    out = await PDFDocument.load(buf);
+    assert.equal(out.getForm().getTextField('Qty').getText(), '5'); assert.equal(out.getForm().getTextField('Price').getText(), '10');
+    await page.evaluate(() => window.__app.tools.closeGroup());
+    await closeAll();
+  });
   step('Security: only open folders, conversion without internet', async () => {
     // The open function does not start files or programs.
     const msg = await page.evaluate((p) => window.dp.openPath(p), file('a.pdf'));
@@ -1055,7 +1179,7 @@ async function makeFixture(name, pages = 4) {
         await page.mouse.up(); await page.waitForFunction(() => window.__app.doc.dirty, null, { timeout: 15000 }); await wait(800); await page.waitForSelector('.eb'); await wait(300);
       };
     };
-    const pos = async () => page.evaluate(async () => Object.fromEntries((await window.__app.doc.pageText(0)).items.filter((x) => /Alpha|Beta|Gamma/.test(x.str)).map((x) => [x.str.trim().split(' ').pop(), [Math.round(x.transform[4]), Math.round(x.transform[5])]])));
+    const pos = async () => page.evaluate(async () => Object.fromEntries((await window.__app.doc.pageText(0)).items.filter((x) => /Alpha|Beta|Gamma|Delta/.test(x.str)).map((x) => [x.str.trim().split(' ').pop(), [Math.round(x.transform[4]), Math.round(x.transform[5])]])));
     const blocks = async () => (await page.evaluate(async () => (await window.__app.editor.objects(0)).filter((o) => o.kind === 'text').map((o) => o.text))).sort();
     const near = (a, b, msg) => assert.ok(a && Math.abs(a[0] - b[0]) <= 2 && Math.abs(a[1] - b[1]) <= 2, `${msg}: ${JSON.stringify(a)} instead of ${JSON.stringify(b)}`);
     // 1. Drag Alpha so that it partly lies on Beta.
@@ -1071,16 +1195,79 @@ async function makeFixture(name, pages = 4) {
     await up();
     p = await pos();
     near(p.Alpha, [112, 305], 'Alpha moved again'); near(p.Beta, [72, 500], 'Beta stays on the second move');
-    // 3. New text directly on Beta, then drag it away.
-    await page.click('.lp-item[data-tool="add-text"]');
-    await clickAt(0, [150, 512]); await page.waitForSelector('.eb-frame .eb-input');
-    await page.keyboard.type('New Gamma'); await page.click('#propbar .btn.primary');
+    // 3. New text directly on Beta, then drag it away. The font of new text is set explicitly: the default
+    // (Word's, e.g. the cloud font Aptos) differs from computer to computer, and the new text must stay its own
+    // block in any font.
+    const fonts = [['Arial', 'Gamma', 200], ['Calibri', 'Delta', -130]];
+    const done = [];
+    const family0 = await page.evaluate(() => window.__app.editor.newStyle.family);
+    for (const [family, word, dy] of fonts) {
+      await page.evaluate((f) => { window.__app.editor.newStyle.family = f; }, family);
+      await page.click('.lp-item[data-tool="add-text"]');
+      await clickAt(0, [150, 512]); await page.waitForSelector('.eb-frame .eb-input');
+      await page.keyboard.type(`New ${word}`); await page.click('#propbar .btn.primary');
+      await page.waitForFunction(() => !window.__app.editor.input); await wait(800); await page.waitForSelector('.eb'); await wait(300);
+      done.push(`New ${word}`);
+      assert.deepEqual(await blocks(), ['Lower paragraph Beta', ...done, 'Upper paragraph Alpha'].sort(), `${family}: new text is its own block`);
+      const g = (await pos())[word];
+      up = await mv([g[0] + 40, g[1] + 4], [g[0] + 40, g[1] + 4 + dy]); await up();
+      p = await pos();
+      near(p.Beta, [72, 500], `${family}: Beta stays when the new text is moved`); near(p[word], [g[0], g[1] + dy], `${family}: new text moved`);
+    }
+    await page.evaluate((f) => { window.__app.editor.newStyle.family = f; }, family0);
+    await page.evaluate(() => window.__app.tools.closeGroup());
+    await closeAll();
+  });
+  step('Invoice table: overlapping paragraphs are one block, moved exactly, edited cell by cell; unmapped hyphens', async () => {
+    await openFile(await invoiceFixture('invoice.pdf'));
+    await group('edit'); await page.waitForSelector('.eb'); await wait(300);
+    const TABLE = 'Invoice number INV-0042\nDate of issue November 21, 2026\nDate due November 21, 2026\nVAT Registration Sample VAT: CHE-\n123.456.789 MWST';
+    const objs = () => page.evaluate(async () => (await window.__app.editor.objects(0)).filter((o) => o.kind === 'text').map((o) => ({ text: o.text, rect: o.rect, lines: o.lines.map((l) => ({ y: l.y, cells: l.cells.map((c) => ({ text: l.text.slice(c.start, c.end), x: c.x0, bold: c.style.bold, size: c.style.size })) })) })));
+    let list = await objs();
+    // 1. The dates lie within the paragraph of the labels: one block, no frame within another.
+    assert.deepEqual(list.filter((o) => /November/.test(o.text)).map((o) => o.text), [TABLE], 'the table is one block');
+    assert.ok(list.some((o) => o.text === 'Example Ltd\nMain Street 1\nCH-1234 Sample Town\nSwitzerland'), `hyphen without a text mapping recognized: ${JSON.stringify(list.map((o) => o.text))}`);
+    // 2. Move the table: everything moves along exactly (font, size, columns), nothing stays behind or gets lost.
+    const items = () => page.evaluate(async () => (await window.__app.doc.pageText(0)).items.filter((x) => x.str.trim()).map((x) => ({ s: x.str, x: Math.round(x.transform[4] * 100) / 100, y: Math.round(x.transform[5] * 100) / 100, size: Math.round(Math.hypot(x.transform[2], x.transform[3]) * 100) / 100 })));
+    const before = await items();
+    const [x0, y0] = await pagePt(0, 50, 688); const [x1, y1] = await pagePt(0, 300, 688);
+    await page.mouse.move(x0, y0); await page.mouse.down(); await page.mouse.move(x1, y1, { steps: 10 });
+    await page.evaluate(() => { window.__app.doc.dirty = false; });
+    await page.mouse.up(); await page.waitForFunction(() => window.__app.doc.dirty, null, { timeout: 15000 }); await wait(800); await page.waitForSelector('.eb'); await wait(300);
+    const after = await items();
+    for (const w of ['Invoice number', 'Date of issue', 'Date due', 'VAT Registration', '123.456.789 MWST']) {
+      const a = before.find((i) => i.s.includes(w)); const b = after.find((i) => i.s.includes(w));
+      assert.ok(b && Math.abs(b.x - a.x - 250) < 0.05 && Math.abs(b.y - a.y) < 0.05 && b.size === a.size, `${w} moved exactly: ${JSON.stringify(a)} -> ${JSON.stringify(b)}`);
+    }
+    assert.equal(after.filter((i) => i.s.includes('November 21, 2026') && i.x > 300).length, 2, `both dates moved along: ${JSON.stringify(after)}`);
+    list = await objs();
+    const table = list.find((o) => o.text === TABLE);
+    assert.ok(table, `still one block after moving: ${JSON.stringify(list.map((o) => o.text))}`);
+    assert.deepEqual(table.lines.map((l) => l.cells.map((c) => c.bold)), [[true, true], [false, false], [false, false], [false, false], [false]], 'only the first row is bold');
+    // 3. Change a date: every cell keeps its place, size and weight.
+    const [tx, ty] = await pagePt(0, 300, 701);
+    await page.mouse.dblclick(tx, ty); await page.waitForSelector('.eb-frame .eb-input');
+    assert.equal(await page.$eval('.eb-input', (e) => e.value), TABLE);
+    await page.evaluate(() => { const ta = document.querySelector('.eb-input'); ta.value = ta.value.replace('November 21, 2026', 'November 22, 2026'); ta.dispatchEvent(new Event('input')); });
+    await page.click('#propbar .btn.primary');
     await page.waitForFunction(() => !window.__app.editor.input); await wait(800); await page.waitForSelector('.eb'); await wait(300);
-    assert.deepEqual(await blocks(), ['Lower paragraph Beta', 'New Gamma', 'Upper paragraph Alpha'], 'new text is its own block');
-    const g = (await pos()).Gamma;
-    up = await mv([g[0] + 40, g[1] + 4], [g[0] + 40, g[1] + 204]); await up();
-    p = await pos();
-    near(p.Beta, [72, 500], 'Beta stays when the new text is moved'); near(p.Gamma, [g[0], g[1] + 200], 'new text moved');
+    list = await objs();
+    const edited = list.find((o) => /November 22/.test(o.text));
+    assert.equal(edited?.text, TABLE.replace('November 21, 2026', 'November 22, 2026'), `edited table: ${JSON.stringify(list.map((o) => o.text))}`);
+    const near = (a, b) => Math.abs(a - b) < 0.05;
+    edited.lines.forEach((l, k) => {
+      assert.ok(near(l.y, table.lines[k].y), `row ${k + 1} stays on its baseline: ${l.y} / ${table.lines[k].y}`);
+      l.cells.forEach((c, j) => assert.ok(near(c.x, table.lines[k].cells[j].x) && near(c.size, 9) && c.bold === table.lines[k].cells[j].bold, `cell "${c.text}" keeps place, size and weight: ${JSON.stringify(c)}`));
+    });
+    // 4. Change the address: the hyphen stays a hyphen.
+    const [ax, ay] = await pagePt(0, 270, 602);
+    await page.mouse.dblclick(ax, ay); await page.waitForSelector('.eb-frame .eb-input');
+    assert.ok((await page.$eval('.eb-input', (e) => e.value)).includes('CH-1234 Sample Town'), 'hyphen in the input field');
+    await page.evaluate(() => { const ta = document.querySelector('.eb-input'); ta.value = ta.value.replace('Main Street 1', 'Main Street 12'); ta.dispatchEvent(new Event('input')); });
+    await page.click('#propbar .btn.primary');
+    await page.waitForFunction(() => !window.__app.editor.input); await wait(800); await page.waitForSelector('.eb'); await wait(300);
+    const text = (await items()).map((i) => i.s).join('|');
+    assert.ok(text.includes('Main Street 12') && /CH-1234 Sample Town/.test(text) && !text.includes('CH?'), `address set again with the hyphen: ${text}`);
     await page.evaluate(() => window.__app.tools.closeGroup());
     await closeAll();
   });

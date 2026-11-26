@@ -27,7 +27,7 @@
     "@tesseract.js-data/fra": "1.0.0",
     "@tesseract.js-data/ita": "1.0.0",
     "docx": "9.15.3",
-    "electron": "45.2.3",
+    "electron": "45.5.0",
     "electron-builder": "26.18.0",
     "esbuild": "0.28.2",
     "eslint": "10.14.0",

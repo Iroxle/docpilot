@@ -1,6 +1,7 @@
 // Interpreter for page content streams: finds text and image operators and can really remove or move them.
-import { PDFName, PDFDict, PDFArray, PDFNumber, PDFRawStream, decodePDFRawStream, PDFStream } from '@cantoo/pdf-lib';
+import { PDFName, PDFDict, PDFArray, PDFNumber, PDFRawStream, decodePDFRawStream, PDFStream, PDFOperator, PDFHexString, StandardFontEmbedder } from '@cantoo/pdf-lib';
 import { loadForEdit, saveDoc } from './ops.js';
+import { unmappedChars } from './glyphs.js';
 
 const WS = new Set([0, 9, 10, 12, 13, 32]);
 const DELIM = new Set([...'()<>[]{}/%'].map((c) => c.charCodeAt(0)));
@@ -139,7 +140,7 @@ export function pageContentBytes(page) {
   return out;
 }
 
-function fontMetrics(fontDict) {
+export function fontMetrics(fontDict) {
   if (!fontDict) return { cid: false, width: () => 500, base: '' };
   const sub = fontDict.lookup(PDFName.of('Subtype'));
   const baseObj = fontDict.lookup(PDFName.of('BaseFont'));
@@ -162,12 +163,32 @@ function fontMetrics(fontDict) {
   }
   const first = fontDict.lookupMaybe(PDFName.of('FirstChar'), PDFNumber);
   const arr = fontDict.lookupMaybe(PDFName.of('Widths'), PDFArray);
+  // The 14 standard fonts may come without widths: take them from their font metrics.
+  const std = arr ? null : standardWidths(base);
+  if (std) return { cid: false, width: (c) => std.get(c) ?? 250, base };
   const list = arr ? arr.asArray().map((o) => { const n = fontDict.context.lookup(o); return n && n.asNumber ? n.asNumber() : 0; }) : null;
   const f0 = first ? first.asNumber() : 0;
   const desc = fontDict.lookupMaybe(PDFName.of('FontDescriptor'), PDFDict);
   const mw = desc ? desc.lookupMaybe(PDFName.of('MissingWidth'), PDFNumber) : undefined;
   const dflt = mw ? mw.asNumber() : (/Courier/i.test(base) ? 600 : 500);
   return { cid: false, width: (c) => (list && list[c - f0] !== undefined ? list[c - f0] : dflt), base };
+}
+
+const STD14 = new Set(['Helvetica', 'Helvetica-Bold', 'Helvetica-Oblique', 'Helvetica-BoldOblique', 'Times-Roman', 'Times-Bold', 'Times-Italic', 'Times-BoldItalic', 'Courier', 'Courier-Bold', 'Courier-Oblique', 'Courier-BoldOblique', 'Symbol', 'ZapfDingbats']);
+const stdWidths = new Map();
+/** Widths per code of a standard font (WinAnsi; Symbol and ZapfDingbats in their own encoding), or null. */
+function standardWidths(base) {
+  if (!STD14.has(base)) return null;
+  if (!stdWidths.has(base)) {
+    let w = null;
+    try {
+      const e = new StandardFontEmbedder(base);
+      w = new Map();
+      for (const [code, glyph] of Object.values(e.encoding.unicodeMappings)) if (!w.has(code)) w.set(code, e.font.getWidthOfGlyph(glyph) ?? 250);
+    } catch { w = null; }
+    stdWidths.set(base, w);
+  }
+  return stdWidths.get(base);
 }
 
 function colorOf(args, space) {
@@ -216,24 +237,33 @@ function ocrPropsOf(o) {
   return o.Ocr ? { font: o.Font || null, bold: !!o.Bold, tz: o.Tz > 0 ? o.Tz : 100 } : null;
 }
 
-/** Reads a page and returns text and image objects together with their position in the stream. */
-export function interpret(page) {
+/**
+ * Reads a page and returns text and image objects together with their position in the stream.
+ * Each text item also carries the state it is drawn with (state, segments, adv), so that it can be copied exactly
+ * (see textCopyOperators). With opts.glyphs, glyphs: [{ x, y, ch }] lists the glyphs that the font maps to no
+ * character, with the character recognized from their shape (see glyphs.js).
+ */
+export function interpret(page, opts = {}) {
   const bytes = pageContentBytes(page);
   const ops = tokenize(bytes);
   const res = page.node.Resources();
   const fontsDict = res ? res.lookupMaybe(PDFName.of('Font'), PDFDict) : null;
   const xobjDict = res ? res.lookupMaybe(PDFName.of('XObject'), PDFDict) : null;
+  const glyphs = opts.glyphs ? [] : null;
   const metricsCache = new Map();
   const metrics = (name) => {
     if (!metricsCache.has(name)) {
       let d = null;
       try { d = fontsDict ? fontsDict.lookupMaybe(PDFName.of(name), PDFDict) : null; } catch { /* defekt */ }
-      metricsCache.set(name, fontMetrics(d));
+      const m = fontMetrics(d);
+      if (glyphs && d) m.recover = unmappedChars(d);
+      metricsCache.set(name, m);
     }
     return metricsCache.get(name);
   };
   let ctm = [1, 0, 0, 1, 0, 0];
-  let st = { fill: [0, 0, 0], font: null, size: 0, leading: 0, tc: 0, tw: 0, th: 1, rise: 0, tr: 0 };
+  // fillOps/strokeOps/lw/gs: the operators that set the colors, line width and graphics state, for exact copies.
+  let st = { fill: [0, 0, 0], font: null, size: 0, leading: 0, tc: 0, tw: 0, th: 1, rise: 0, tr: 0, fillOps: [], strokeOps: [], lw: null, gs: [] };
   const stack = [];
   let tm = [1, 0, 0, 1, 0, 0]; let tlm = tm;
   const items = [];
@@ -256,6 +286,7 @@ export function interpret(page) {
       const step = m.cid ? 2 : 1;
       for (let i = 0; i + step <= seg.length; i += step) {
         const code = m.cid ? seg[i] * 256 + seg[i + 1] : seg[i];
+        if (m.recover?.has(code)) { const p = apply(mul(tm, ctm), adv, st.rise); glyphs.push({ x: p[0], y: p[1], ch: m.recover.get(code) }); }
         adv += ((m.width(code) / 1000) * st.size + st.tc + (!m.cid && code === 32 ? st.tw : 0)) * st.th;
       }
     }
@@ -271,6 +302,9 @@ export function interpret(page) {
       font: st.font, baseFont: m.base, fontSize: Math.hypot(up[0], up[1]), color: st.fill, mark: mark(),
       // Invisible text (render mode 3 or 7), e.g. from text recognition over a scan.
       invisible: st.tr === 3 || st.tr === 7,
+      // Everything needed to draw the item again elsewhere (matrices and arrays are replaced, never changed).
+      state: { ctm, tm, font: st.font, size: st.size, tc: st.tc, tw: st.tw, th: st.th, rise: st.rise, tr: st.tr, fillOps: st.fillOps, strokeOps: st.strokeOps, lw: st.lw, gs: st.gs },
+      segments, adv,
     });
     tm = mul([1, 0, 0, 1, adv, 0], tm);
   };
@@ -307,10 +341,18 @@ export function interpret(page) {
         break;
       }
       case 'EMC': { marks.pop(); pasted.pop(); const s = open.pop(); if (s) spans.push({ ...s, end: o.end }); break; }
-      case 'g': st.fill = colorOf(a, 'g'); break;
-      case 'rg': st.fill = colorOf(a, 'rg'); break;
-      case 'k': st.fill = colorOf(a, 'k'); break;
-      case 'sc': case 'scn': if (a.length === 1) st.fill = colorOf(a, 'g'); else if (a.length === 3) st.fill = colorOf(a, 'rg'); else if (a.length === 4 && a[3].t === 'num') st.fill = colorOf(a, 'k'); break;
+      case 'g': st.fill = colorOf(a, 'g'); st.fillOps = [o]; break;
+      case 'rg': st.fill = colorOf(a, 'rg'); st.fillOps = [o]; break;
+      case 'k': st.fill = colorOf(a, 'k'); st.fillOps = [o]; break;
+      case 'cs': st.fillOps = [o]; break;
+      case 'sc': case 'scn':
+        if (a.length === 1) st.fill = colorOf(a, 'g'); else if (a.length === 3) st.fill = colorOf(a, 'rg'); else if (a.length === 4 && a[3].t === 'num') st.fill = colorOf(a, 'k');
+        st.fillOps = [...st.fillOps.filter((x) => x.op === 'cs'), o];
+        break;
+      case 'G': case 'RG': case 'K': case 'CS': st.strokeOps = [o]; break;
+      case 'SC': case 'SCN': st.strokeOps = [...st.strokeOps.filter((x) => x.op === 'CS'), o]; break;
+      case 'w': st.lw = o; break;
+      case 'gs': st.gs = [...st.gs, o]; break;
       case 'Do': {
         let isImage = false;
         try { const x = xobjDict && xobjDict.lookupMaybe(PDFName.of(n[0]), PDFStream); isImage = !!x && x.dict.lookup(PDFName.of('Subtype')) === PDFName.of('Image'); } catch { /* defekt */ }
@@ -324,7 +366,79 @@ export function interpret(page) {
       default: break;
     }
   }
-  return { bytes, ops, items, ocr, props, spans };
+  // endCtm: the transformation that is still in effect after the content (if it does not restore it), for what is appended.
+  return { bytes, ops, items, ocr, props, spans, glyphs, endCtm: ctm };
+}
+
+const num = (v) => PDFNumber.of(Math.abs(v) < 1e-7 ? 0 : Math.round(v * 1e6) / 1e6);
+const hexOf = (bytes) => PDFHexString.of(Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join(''));
+function pdfArg(ctx, a) {
+  if (a.t === 'num') return num(a.v);
+  if (a.t === 'name') return PDFName.of(a.v);
+  if (a.t === 'str') return hexOf(a.v);
+  if (a.t === 'arr') return ctx.obj(a.v.map((x) => pdfArg(ctx, x)));
+  return null;
+}
+const copyOp = (ctx, o) => PDFOperator.of(o.op, o.args.map((a) => pdfArg(ctx, a)));
+
+/**
+ * Operators that draw the text items (from interpret) once more, moved by dx/dy in page space: same font, size,
+ * glyphs, spacing and colors as the original. endCtm: transformation in effect where the operators are appended.
+ */
+export function textCopyOperators(ctx, items, dx = 0, dy = 0, endCtm = [1, 0, 0, 1, 0, 0]) {
+  const out = [];
+  const P = (op, args = []) => out.push(PDFOperator.of(op, args));
+  const back = inv(endCtm);
+  for (const it of items) {
+    const s = it.state;
+    if (!s?.font || !it.segments) continue;
+    if (it.segments.some((x) => typeof x !== 'number' && !x)) continue;
+    P('q');
+    P('cm', mul(mul(s.ctm, [1, 0, 0, 1, dx, dy]), back).map(num));
+    for (const g of s.gs) out.push(copyOp(ctx, g));
+    P('w', [s.lw ? pdfArg(ctx, s.lw.args[0] || { t: 'num', v: 1 }) : num(1)]);
+    if (s.fillOps.length) for (const o of s.fillOps) out.push(copyOp(ctx, o)); else P('g', [num(0)]);
+    if (s.strokeOps.length) for (const o of s.strokeOps) out.push(copyOp(ctx, o)); else P('G', [num(0)]);
+    P('BT');
+    P('Tf', [PDFName.of(s.font), num(s.size)]);
+    P('Tc', [num(s.tc)]); P('Tw', [num(s.tw)]); P('Tz', [num(s.th * 100)]); P('Ts', [num(s.rise)]); P('Tr', [num(s.tr)]);
+    P('Tm', s.tm.map(num));
+    const segs = it.segments;
+    if (segs.length === 1 && typeof segs[0] !== 'number') P('Tj', [hexOf(segs[0])]);
+    else P('TJ', [ctx.obj(segs.map((x) => (typeof x === 'number' ? num(x) : hexOf(x))))]);
+    P('ET');
+    P('Q');
+  }
+  return out;
+}
+
+/**
+ * Removes text items (from interpret(page) = r) from the page content. A shown text is replaced by the same
+ * advance without glyphs, so that text which follows in the same text object stays exactly where it is.
+ * Editor blocks (spans with marker id mark) whose text is removed entirely are removed as a whole.
+ */
+export function removeTextItems(page, r, items, mark = null) {
+  const set = new Set(items);
+  const edits = [];
+  const whole = mark ? r.spans.filter((s) => s.id === mark && r.items.every((it) => it.kind !== 'text' || it.mark !== mark || set.has(it))) : [];
+  const inWhole = (it) => whole.some((s) => it.op.start >= s.start && it.op.end <= s.end);
+  for (const s of whole) edits.push({ start: s.start, end: s.end, text: ' ' });
+  for (const it of items) {
+    if (inWhole(it)) continue;
+    const st = it.state; const scale = st ? st.size * st.th : 0;
+    const shift = scale && st.tr < 4 ? ` [${((-it.adv * 1000) / scale).toFixed(3)}] TJ ` : ' ';
+    const o = it.op;
+    if (o.op === "'") edits.push({ start: o.start, end: o.end, text: ` T*${shift}` });
+    else if (o.op === '"') edits.push({ start: o.start, end: o.end, text: ` ${o.args[0]?.v ?? 0} Tw ${o.args[1]?.v ?? 0} Tc T*${shift}` });
+    else edits.push({ start: o.start, end: o.end, text: shift });
+  }
+  if (edits.length) rewrite(page, r.bytes, edits);
+  return edits.length;
+}
+
+/** Text items of a block: those of its editor marker, or the unmarked ones that lie mostly within rect. */
+export function blockTextItems(r, rect, mark) {
+  return r.items.filter((it) => it.kind === 'text' && (mark ? it.mark === mark : !it.mark && overlapShare(it.bbox, rect) >= 0.5));
 }
 
 /** Parts of a rectangle a outside of b (up to four rectangles). */

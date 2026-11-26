@@ -1,7 +1,7 @@
 // Right sidebar and page management.
 import { h, $, ibtn, icon, cssColor, fmtDate, fmtSize, toast, errToast, formDialog, contextMenu, debounce } from './util.js';
 import { setOutline, addAttachment, removeAttachment, rotatePages, reorderPages, duplicatePages } from './pdf/ops.js';
-import { verifySignatures } from './pdf/sign.js';
+import { signatureDetails } from './pdf/sign.js';
 
 const RAIL = [['comments', 'comment', 'Comments'], ['thumbs', 'thumbs', 'Page thumbnails'], ['bookmarks', 'bookmark', 'Bookmarks'], ['attachments', 'clip', 'Attachments'], ['layers', 'layers', 'Layers'], ['signatures', 'cert', 'Signatures'], ['search', 'search', 'Advanced search']];
 const STATES = [['', 'No status'], ['Accepted', 'Accepted'], ['Rejected', 'Rejected'], ['Cancelled', 'Cancelled'], ['Completed', 'Completed']];
@@ -276,12 +276,20 @@ export class Panels {
   }
 
   // --- Signatures ------------------------------------------------------------------------
-  renderSignatures() {
-    const bytes = this.doc.saved;
-    const list = this.doc.encrypted ? [] : verifySignatures(bytes);
+  async renderSignatures() {
+    const doc = this.doc;
+    const bytes = doc.saved;
+    const list = doc.encrypted || !bytes ? [] : await signatureDetails(bytes);
+    if (this.doc !== doc) return;
+    const MDP = { 1: 'no changes', 2: 'filling in forms and signing', 3: 'filling in forms, signing and comments' };
     const body = list.length ? list.map((s, i) => {
-      const badge = s.error ? ['bad', 'Error'] : !s.valid ? ['bad', 'Invalid'] : !s.covers ? ['warn', 'Changed after signing'] : s.selfSigned ? ['warn', 'Valid, identity unverified'] : ['ok', 'Valid'];
-      return h('div', { class: 'cm' }, h('header', {}, h('b', { class: 'au' }, s.name || `Signature ${i + 1}`)), h('span', { class: `badge ${badge[0]}` }, badge[1]),
+      const bad = s.changes?.disallowed.length;
+      const badge = s.error ? ['bad', 'Error'] : !s.valid ? ['bad', 'Invalid'] : bad ? ['bad', 'Changed after signing'] : s.selfSigned ? ['warn', 'Valid, identity unverified'] : ['ok', 'Valid'];
+      return h('div', { class: 'cm', data: { sig: i } }, h('header', {}, h('b', { class: 'au' }, s.name || `Signature ${i + 1}`)), h('span', { class: `badge ${badge[0]}` }, badge[1]),
+        s.certify ? h('div', { data: { certified: s.certify } }, `Certified: allows ${MDP[s.certify]}`) : null,
+        s.valid ? h('div', { data: { changes: s.changes ? (bad ? 'disallowed' : 'allowed') : 'none' } }, !s.changes ? 'The document has not changed since it was signed.'
+          : bad ? `Changed after signing, not permitted: ${s.changes.disallowed.join(', ')}${s.changes.allowed.length ? ` (permitted: ${s.changes.allowed.join(', ')})` : ''}.`
+            : `Changed after signing, permitted: ${s.changes.allowed.join(', ') || 'nothing that changes the content'}.`) : null,
         s.signedAt ? h('div', {}, `Signed: ${fmtDate(s.signedAt)}`) : null,
         s.issuer ? h('div', {}, `Issuer: ${s.issuer}`) : null,
         s.notAfter ? h('div', {}, `Certificate valid until: ${fmtDate(s.notAfter)}`) : null,

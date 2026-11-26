@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Download DocPilot
+    url: https://github.com/Iroxle/docpilot/releases/latest
+    about: The latest version for Windows and Mac, with checksums.

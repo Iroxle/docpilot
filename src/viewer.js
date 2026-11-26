@@ -216,6 +216,7 @@ export class Viewer {
       const layer = new AnnotationLayer({ div: annotDiv, page: proxy, viewport: vpCss.clone({ dontFlip: true }), accessibilityManager: null, annotationCanvasMap: null, annotationEditorUIManager: null, structTreeLayer: null, commentManager: null, linkService: this.linkService(), annotationStorage: doc.pdf.annotationStorage });
       await layer.render({ annotations, div: annotDiv, page: proxy, viewport: vpCss.clone({ dontFlip: true }), linkService: this.linkService(), annotationStorage: doc.pdf.annotationStorage, renderForms: true, enableScripting: !!js, hasJSActions: !!js, fieldObjects, imageResourcesPath: '', downloadManager: null });
       if (js) this.app.scripting.pageRendered(n.i);
+      else await this.app.formCalc?.decorate(annotDiv, doc);
       this.app.applyFormHighlight?.(annotDiv);
       annotDiv.addEventListener('input', () => doc.markDirty(), { once: false });
       annotDiv.addEventListener('change', () => doc.markDirty(), { once: false });

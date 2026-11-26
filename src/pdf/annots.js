@@ -1,6 +1,6 @@
 // Comments: exchange between the editing model and real PDF annotations.
 import { PDFName, PDFDict, PDFArray, PDFString, PDFHexString, PDFNumber, PDFRef, StandardFonts } from '@cantoo/pdf-lib';
-import { getFont, sanitizeFor, wrapText, loadForEdit, saveDoc, isWinAnsi, gcObjects } from './ops.js';
+import { getFont, sanitizeFor, wrapText, loadForEdit, saveDoc, isWinAnsi, gcObjects, addAnnotTo } from './ops.js';
 
 const N = (s) => PDFName.of(s);
 const SUBTYPES = {
@@ -415,15 +415,15 @@ export async function writeAnnotations(doc, annotsByPage, readFont) {
       const ap = ctx.flateStream(ops, { Type: 'XObject', Subtype: 'Form', FormType: 1, BBox: bbox, Resources: resources });
       dict.set(N('AP'), ctx.obj({ N: ctx.register(ap) }));
       const ref = ctx.register(dict);
-      page.node.addAnnot(ref);
+      addAnnotTo(page, ref);
       for (const rep of a.replies || []) {
-        page.node.addAnnot(ctx.register(ctx.obj({
+        addAnnotTo(page, ctx.register(ctx.obj({
           Type: 'Annot', Subtype: 'Text', Rect: bbox, F: 28, IRT: ref, RT: 'R', NM: PDFHexString.fromText(rep.id),
           T: PDFHexString.fromText(rep.author || ''), Contents: PDFHexString.fromText(rep.contents || ''), M: PDFString.of(pdfDate(rep.modified)), Name: 'Comment',
         })));
       }
       if (a.status) {
-        page.node.addAnnot(ctx.register(ctx.obj({
+        addAnnotTo(page, ctx.register(ctx.obj({
           Type: 'Annot', Subtype: 'Text', Rect: bbox, F: 28, IRT: ref, NM: PDFHexString.fromText(newId()),
           T: PDFHexString.fromText(a.author || ''), Contents: PDFHexString.fromText(''), State: PDFHexString.fromText(a.status), StateModel: PDFHexString.fromText('Review'),
         })));

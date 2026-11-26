@@ -4,7 +4,8 @@ import { loadForEdit, saveDoc, getStyledFont, drawTextBlock, textBlockBox, fillR
 import { blockLines, replacedText } from './pdf/replace.js';
 import { PDFDocument, PDFOperator, PDFName, PDFString, rgb } from '@cantoo/pdf-lib';
 import { eraseInImages, sampleColors, insertImageRows } from './scan.js';
-import { interpret, removeTextInPage, removeImageInPage, moveImage, deleteImage, imageRole, subtractRect, EDIT_TAG } from './pdf/content.js';
+import { interpret, removeTextInPage, removeImageInPage, moveImage, deleteImage, imageRole, subtractRect, EDIT_TAG, blockTextItems, removeTextItems, textCopyOperators } from './pdf/content.js';
+import { fixUnmapped } from './pdf/glyphs.js';
 import { readFont, pdfjs, RENDER_OPTS } from './document.js';
 import { startDrag } from './overlay.js';
 import { mapFamily, cssFamily, cssFamilyReady, wordDefault, familyInfo } from './fonts.js';
@@ -15,8 +16,11 @@ export { mapFamily };
 /**
  * Groups text items into lines and paragraphs. Slightly rotated text only counts if it is recognized text of a
  * skewed scanned page, or with allowTilt (export: no text should be missing there).
+ * opts.merge (editor): blocks that overlap become one block (e.g. the labels and values of a table whose value
+ * column is partly a paragraph of its own), as do blocks of the same editor marker, and a line that starts below a
+ * column of the line above continues that block. Each line has cells: its parts separated by a wide gap (columns).
  */
-export function buildBlocks(items, allowTilt = false) {
+export function buildBlocks(items, allowTilt = false, opts = {}) {
   const parts = items.map((t, item) => ({ t, item })).filter(({ t }) => t.str && t.str.trim()).map(({ t, item }) => {
     const [a, b, c, d, e, f] = t.transform;
     // The font height is in the vertical axis; the horizontal one also contains a compression.
@@ -44,19 +48,7 @@ export function buildBlocks(items, allowTilt = false) {
   }
   // Skewed line: its height is the baseline at the left end (newly set text starts there).
   for (const l of lines) if (l.skew) l.y = l.yL;
-  for (const l of lines) {
-    l.parts.sort((p, q) => p.x0 - q.x0);
-    l.text = '';
-    let last = null;
-    for (const p of l.parts) {
-      if (last !== null && p.x0 - last > l.size * 0.18 && !l.text.endsWith(' ') && !p.str.startsWith(' ')) l.text += ' ';
-      p.at = l.text.length;
-      l.text += p.str; last = p.x1;
-    }
-    const lead = l.text.length - l.text.trimStart().length;
-    for (const p of l.parts) p.at -= lead;
-    l.text = l.text.trim();
-  }
+  for (const l of lines) finishLine(l);
   lines.sort((p, q) => q.y - p.y || p.x0 - q.x0);
   const blocks = [];
   for (const l of lines) {
@@ -64,20 +56,88 @@ export function buildBlocks(items, allowTilt = false) {
     const b = isOcrMark(l.mark) ? blocks.find((c) => c.mark === l.mark) : blocks.find((c) => {
       const prev = c.lines[c.lines.length - 1];
       const gap = prev.y - l.y;
-      return c.mark === l.mark && Math.abs(prev.size - l.size) < l.size * 0.12 && gap > 0 && gap < l.size * 1.65 && Math.abs(prev.x0 - l.x0) < l.size * 1.2;
+      // A line that starts below a column of the line above continues it (e.g. a value that wraps in a table).
+      const aligned = Math.abs(prev.x0 - l.x0) < l.size * 1.2 || (opts.merge && prev.cells.some((cell, k) => k > 0 && Math.abs(cell.x0 - l.x0) < l.size * 0.3));
+      return c.mark === l.mark && Math.abs(prev.size - l.size) < l.size * 0.12 && gap > 0 && gap < l.size * 1.65 && aligned;
     });
     if (b) b.lines.push(l); else blocks.push({ lines: [l], mark: l.mark });
   }
+  if (opts.merge) mergeBlocks(blocks);
   return blocks.map((b) => {
     const size = b.lines[0].size;
+    const first = b.lines[0]; const last = b.lines[b.lines.length - 1];
     const x0 = Math.min(...b.lines.map((l) => l.x0)); const x1 = Math.max(...b.lines.map((l) => l.x1));
-    const top = b.lines[0].y + size * 0.92; const bottom = b.lines[b.lines.length - 1].y - size * 0.24;
-    const lineHeight = b.lines.length > 1 ? (b.lines[0].y - b.lines[b.lines.length - 1].y) / (b.lines.length - 1) : size * 1.2;
+    const top = first.y + (opts.merge ? first.size : size) * 0.92; const bottom = last.y - (opts.merge ? last.size : size) * 0.24;
+    const lineHeight = b.lines.length > 1 ? (first.y - last.y) / (b.lines.length - 1) : size * 1.2;
     // Line breaks are kept so the paragraph keeps its shape while editing.
-    return { kind: 'text', text: b.lines.map((l) => l.text).join('\n'), rect: [x0, bottom, x1, top], size, lineHeight, baseline: b.lines[0].y, mark: b.mark, lines: b.lines.map((l) => ({ text: l.text, x0: l.x0, x1: l.x1, parts: l.parts.map((p) => ({ item: p.item, at: p.at })) })) };
+    return {
+      kind: 'text', text: b.lines.map((l) => l.text).join('\n'), rect: [x0, bottom, x1, top], size, lineHeight, baseline: first.y, mark: b.mark,
+      lines: b.lines.map((l) => ({
+        text: l.text, x0: l.x0, x1: l.x1, y: l.y, size: l.size, cells: l.cells.map((c) => ({ ...c })),
+        parts: l.parts.map((p) => ({ item: p.item, at: p.at, x0: p.x0, x1: p.x1, size: p.size })),
+      })),
+    };
   });
 }
 const isOcrMark = (m) => typeof m === 'string' && m.startsWith('ocr');
+
+/**
+ * Text of a line from its parts (a space where there is a gap), the start of each part in it (at) and the cells:
+ * parts separated by a wide gap (the columns of a table, label and value) as { first, last, x0, x1, start, end }
+ * (parts first to last, start/end in the text).
+ */
+function finishLine(l) {
+  l.parts.sort((p, q) => p.x0 - q.x0);
+  l.text = '';
+  let last = null;
+  for (const p of l.parts) {
+    if (last !== null && p.x0 - last > l.size * 0.18 && !l.text.endsWith(' ') && !p.str.startsWith(' ')) l.text += ' ';
+    p.at = l.text.length;
+    l.text += p.str; last = p.x1;
+  }
+  const lead = l.text.length - l.text.trimStart().length;
+  for (const p of l.parts) p.at -= lead;
+  l.text = l.text.trim();
+  l.cells = [];
+  l.parts.forEach((p, k) => {
+    const c = l.cells[l.cells.length - 1];
+    if (c && p.x0 - c.x1 < l.size * 0.6) { c.last = k; c.x1 = Math.max(c.x1, p.x1); } else l.cells.push({ first: k, last: k, x0: p.x0, x1: p.x1 });
+  });
+  for (const c of l.cells) {
+    const a = l.parts[c.first]; const z = l.parts[c.last];
+    c.start = Math.max(0, a.at + a.str.length - a.str.trimStart().length);
+    c.end = Math.min(l.text.length, z.at + z.str.trimEnd().length);
+  }
+}
+
+/** Joins blocks of the same editor marker, and unmarked blocks that overlap (a quarter of the smaller one or more). */
+function mergeBlocks(blocks) {
+  const rectOf = (b) => [Math.min(...b.lines.map((l) => l.x0)), Math.min(...b.lines.map((l) => l.y - l.size * 0.24)), Math.max(...b.lines.map((l) => l.x1)), Math.max(...b.lines.map((l) => l.y + l.size * 0.92))];
+  const area = (r) => Math.max(0, r[2] - r[0]) * Math.max(0, r[3] - r[1]);
+  const fits = (A, C) => {
+    if (A.mark !== C.mark || isOcrMark(A.mark)) return false;
+    if (A.mark) return true;
+    const ra = rectOf(A); const rc = rectOf(C);
+    return overlap(ra, rc) >= Math.min(area(ra), area(rc)) * 0.25;
+  };
+  for (let again = true; again;) {
+    again = false;
+    for (let a = 0; a < blocks.length && !again; a++) {
+      for (let c = a + 1; c < blocks.length && !again; c++) {
+        const A = blocks[a]; const C = blocks[c];
+        if (!fits(A, C)) continue;
+        // Lines on the same baseline become one line (label and value side by side).
+        for (const l of C.lines) {
+          const t = A.lines.find((m) => Math.abs(m.y - l.y) < Math.min(m.size, l.size) * 0.4);
+          if (t) { t.parts.push(...l.parts); t.x0 = Math.min(t.x0, l.x0); t.x1 = Math.max(t.x1, l.x1); finishLine(t); } else A.lines.push(l);
+        }
+        A.lines.sort((p, q) => q.y - p.y || p.x0 - q.x0);
+        blocks.splice(c, 1);
+        again = true;
+      }
+    }
+  }
+}
 
 /**
  * Area into which a text block is set: [x0, y0, x1, y1]. A block with a fixed width wraps at it.
@@ -129,6 +189,90 @@ export function joinOcrLines(lines, size) {
 }
 
 const overlap = (a, b) => Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0])) * Math.max(0, Math.min(a[3], b[3]) - Math.max(a[1], b[1]));
+
+/**
+ * Font, size and color of each cell of a block (from the text object below its first part), and whether the block
+ * is "complex": columns, several fonts, sizes or colors, lines that do not start at the same place or are not
+ * evenly spaced. Such a block is set again cell by cell when its text changes, so nothing of this gets lost.
+ */
+export function cellStyles(b, textObjs) {
+  const styles = [];
+  for (const l of b.lines || []) {
+    for (const c of l.cells || []) {
+      const p = l.parts[c.first];
+      const box = [p.x0, l.y - p.size * 0.2, Math.max(p.x1, p.x0 + 0.1), l.y + p.size * 0.8];
+      let o = null; let best = 0;
+      for (const t of textObjs) { if ((t.mark || null) !== (b.mark || null)) continue; const v = overlap(box, t.bbox); if (v > best) { best = v; o = t; } }
+      const font = o?.baseFont || '';
+      c.style = { family: mapFamily(font), bold: /bold|black|heavy/i.test(font), italic: /italic|oblique/i.test(font), color: o?.color || b.color || [0, 0, 0], size: p.size };
+      styles.push(c.style);
+    }
+  }
+  const s0 = styles[0];
+  const same = (s) => s.family === s0.family && s.bold === s0.bold && s.italic === s0.italic && Math.abs(s.size - s0.size) <= 0.3 && s.color.every((v, k) => Math.abs(v - s0.color[k]) <= 0.1);
+  const L = b.lines || [];
+  b.complex = !!s0 && (L.some((l) => l.cells.length > 1) || !styles.every(same)
+    || L.some((l) => Math.abs(l.x0 - L[0].x0) > b.size * 0.5)
+    || L.some((l, k) => k > 0 && Math.abs(L[k - 1].y - l.y - b.lineHeight) > b.size * 0.25));
+}
+
+/**
+ * Lines of a complex block after its text has changed: [{ y, cells: [{ text, x, style }] }]. Unchanged lines keep
+ * their place, changed lines keep the places and styles of their cells; only the cells that changed are joined
+ * (in the style of the first one). New lines follow the line above, removed lines close the gap.
+ * old: the block's lines, next: the new lines of text, lh: line height.
+ */
+export function cellLayout(old, next, lh) {
+  const cellsOf = (l) => l.cells.map((c) => ({ text: l.text.slice(c.start, c.end), x: c.x0, style: c.style }));
+  const changed = (l, s) => {
+    const t = l.text; const cells = l.cells;
+    let p = 0; while (p < t.length && p < s.length && t[p] === s[p]) p++;
+    let q = 0; while (q < t.length - p && q < s.length - p && t[t.length - 1 - q] === s[s.length - 1 - q]) q++;
+    const a = p; const b = t.length - q;
+    let first = 0; cells.forEach((c, k) => { if (c.start <= a) first = k; });
+    let last = first; cells.forEach((c, k) => { if (k > first && c.start < b) last = k; });
+    const S = Math.min(cells[first].start, a); const E = Math.max(cells[last].end, b);
+    const out = [];
+    cells.forEach((c, k) => {
+      if (k < first || k > last) out.push({ text: t.slice(c.start, c.end), x: c.x0, style: c.style });
+      else if (k === first) out.push({ text: s.slice(S, E + s.length - t.length), x: c.x0, style: c.style });
+    });
+    return out;
+  };
+  // Pair old and new lines: equal lines as anchors (longest common subsequence), the others in order between them.
+  const n = old.length; const m = next.length;
+  const steps = [];
+  if (n === m) for (let k = 0; k < n; k++) steps.push({ a: k, b: k });
+  else {
+    const L = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+    for (let a = n - 1; a >= 0; a--) for (let b = m - 1; b >= 0; b--) L[a][b] = old[a].text === next[b] ? L[a + 1][b + 1] + 1 : Math.max(L[a + 1][b], L[a][b + 1]);
+    const anchors = []; let a = 0; let b = 0;
+    while (a < n && b < m) { if (old[a].text === next[b]) { anchors.push([a, b]); a++; b++; } else if (L[a + 1][b] >= L[a][b + 1]) a++; else b++; }
+    let pa = 0; let pb = 0;
+    for (const [ea, eb] of [...anchors, [n, m]]) {
+      const k = Math.min(ea - pa, eb - pb);
+      for (let j = 0; j < k; j++) steps.push({ a: pa + j, b: pb + j });
+      for (let j = k; j < eb - pb; j++) steps.push({ b: pb + j });
+      for (let j = k; j < ea - pa; j++) steps.push({ a: pa + j });
+      if (ea < n) steps.push({ a: ea, b: eb });
+      pa = ea + 1; pb = eb + 1;
+    }
+  }
+  const rows = []; let off = 0; let prev = null; let ref = old[0];
+  for (const s of steps) {
+    if (s.b === undefined) { off += lh; continue; }
+    if (s.a === undefined) {
+      const y = prev ? prev.y - lh : old[0].y + off;
+      const c0 = ref.cells[0];
+      rows.push(prev = { y, cells: [{ text: next[s.b], x: c0 ? c0.x0 : ref.x0, style: c0?.style }] });
+      off -= lh;
+      continue;
+    }
+    const l = old[s.a]; ref = l;
+    rows.push(prev = { y: l.y + off, cells: l.text === next[s.b] ? cellsOf(l) : l.cells.length ? changed(l, next[s.b]) : [{ text: next[s.b], x: l.x0, style: null }] });
+  }
+  return rows;
+}
 /** Assigns each text item from PDF.js the marker of the text block it comes from in the page content. */
 export function attachMarks(items, textObjs) {
   if (!textObjs.some((o) => o.mark)) return items;
@@ -145,9 +289,19 @@ export function attachMarks(items, textObjs) {
     // Sum up the area per text block: a line of many small words belongs to its block, even if
     // a single larger text item of another block (e.g. hidden text under an image) has more area.
     const by = new Map();
-    for (const o of textObjs) { let s = 0; for (const r of pieces) s += overlap(r, o.bbox); if (s > 0) by.set(o.mark || '', (by.get(o.mark || '') || 0) + s); }
-    let mark = ''; let score = 0;
-    for (const [m, s] of by) if (s > score) { score = s; mark = m; }
+    for (const o of textObjs) {
+      let s = 0; for (const r of pieces) s += overlap(r, o.bbox);
+      if (s <= 0) continue;
+      const k = o.mark || ''; const v = by.get(k) || { s: 0, area: 0 };
+      v.s += s; v.area += Math.max(1e-6, (o.bbox[2] - o.bbox[0]) * (o.bbox[3] - o.bbox[1]));
+      by.set(k, v);
+    }
+    // Several blocks can cover the text item completely, e.g. a short new text placed on a longer line: both
+    // boxes then contain it. Then the block that the item fills best wins (its own text, not the line below it).
+    let best = 0;
+    for (const v of by.values()) best = Math.max(best, v.s);
+    let mark = ''; let fit = -1;
+    for (const [m, v] of by) if (v.s >= best * 0.97 && v.s / v.area > fit) { fit = v.s / v.area; mark = m; }
     return mark ? { ...t, mark } : t;
   });
 }
@@ -194,15 +348,16 @@ export class PageEditor {
     if (this.cacheFor !== this.doc.bytes) { this.cache.clear(); this.cacheFor = this.doc.bytes; }
     if (this.cache.has(i)) return this.cache.get(i);
     const proxyDoc = this.doc; const stamp = proxyDoc.bytes;
-    let ocrMarks = new Map(); let markProps = new Map();
+    let ocrMarks = new Map(); let markProps = new Map(); let glyphs = null;
     const [content, parsed] = await Promise.all([proxyDoc.pageText(i), (async () => {
       const d = await loadForEdit(proxyDoc.bytes);
-      const r = interpret(d.getPage(i));
-      ocrMarks = r.ocr; markProps = r.props;
-      return r.items.map(({ op, ...x }) => x);
+      const r = interpret(d.getPage(i), { glyphs: true });
+      ocrMarks = r.ocr; markProps = r.props; glyphs = r.glyphs;
+      return r.items.map(({ op, state, segments, ...x }) => x);
     })()]);
     const textObjs = parsed.filter((o) => o.kind === 'text');
-    const blocks = buildBlocks(attachMarks(content.items, textObjs));
+    // Characters that the PDF maps to nothing (e.g. raised hyphens) come from the shape of their glyph.
+    const blocks = buildBlocks(attachMarks(fixUnmapped(content.items, glyphs), textObjs), false, { merge: true });
     for (const b of blocks) {
       // Background that the editor placed behind changed text of a screenshot (outside the image).
       const bg = b.mark ? markProps.get(b.mark)?.Bg : null;
@@ -236,6 +391,7 @@ export class PageEditor {
       b.family = mapFamily(hit?.baseFont || '');
       b.bold = /bold|black|heavy/i.test(hit?.baseFont || ''); b.italic = /italic|oblique/i.test(hit?.baseFont || '');
       b.color = hit?.color || [0, 0, 0];
+      cellStyles(b, textObjs);
       // Drawing order in the page content: drawn later means on top.
       const own = textObjs.filter((o) => (b.mark ? o.mark === b.mark : !o.mark) && hits(o));
       b.order = Math.max(-1, ...(own.length ? own : textObjs.filter(hits)).map((o) => parsed.indexOf(o)));
@@ -585,6 +741,14 @@ export class PageEditor {
    * text in an embedded object). Core of "Edit text" and of "Replace".
    */
   async setBlockText(d, i, o, text, rect, style, info = null) {
+    // Text of the page itself or of the editor (not recognized text, no background or alignment of its own), without a
+    // new format: when only moved, it stays exactly as it is (same font, size and glyphs); a block with columns or mixed
+    // fonts keeps the font, size and place of each cell when its text changes.
+    const plain = Object.keys(style).every((k) => k === 'mark' || style[k] === undefined);
+    if (plain && !o.ocr && !o.isNew && !o.bg && o.align !== 'right' && o.lines) {
+      if (rect && text === o.text) { if (this.moveExact(d, i, o, rect, style.mark)) return d; }
+      else if (o.complex && await this.setCells(d, i, o, text, rect, style.mark)) return d;
+    }
     const s = { family: o.family, bold: o.bold, italic: o.italic, color: o.color, size: o.size, align: o.align, hscale: o.hscale || 1, ...style };
     // Recognized paragraph with unchanged text (only moved or formatted): lines stay as in the image.
     const keepLines = o.ocr && o.origText && text === o.text;
@@ -616,6 +780,66 @@ export class PageEditor {
     if (o.ocr && !keepLines && !rect) await this.makeRoom(d, i, o, body, s, box);
     await this.drawInto(d, i, body, rect || o.rect, s, box);
     return d;
+  }
+
+  /** Marker for a block that the editor writes: its own one, the one given, or a new one. */
+  markOps(d, id) {
+    return [PDFOperator.of('BDC', [PDFName.of(EDIT_TAG), d.context.obj({ Id: PDFString.of(id) })]), PDFOperator.of('EMC')];
+  }
+
+  /**
+   * Moves a block exactly: its text operators are drawn again at the new place with the same font, size, glyphs and
+   * colors, as one editor block. Returns false if the text is not in the page content (e.g. in an embedded object).
+   */
+  moveExact(d, i, o, rect, mark) {
+    const page = d.getPage(i);
+    // pdf-lib wraps the page content in q/Q before it appends anything: do that first, so the state at the end is known.
+    page.node.normalize();
+    const r = interpret(page);
+    const items = blockTextItems(r, o.rect, o.mark || null);
+    if (!items.length || items.some((it) => !it.state?.font)) return false;
+    const [open, close] = this.markOps(d, mark || o.mark || newMark());
+    removeTextItems(page, r, items, o.mark || null);
+    page.pushOperators(open, ...textCopyOperators(d.context, items, rect[0] - o.rect[0], rect[1] - o.rect[1], r.endCtm), close);
+    return true;
+  }
+
+  /**
+   * Sets the text of a complex block (columns, mixed fonts or sizes) again cell by cell: each line on its baseline,
+   * each cell at its place in its own font, size and color (see cellLayout). A cell that grows pushes the following
+   * cells of its line to the right. Returns false (the block is then set as a whole) if a line would run over
+   * the right page edge or the text is not in the page content.
+   */
+  async setCells(d, i, o, text, rect, mark) {
+    const page = d.getPage(i);
+    page.node.normalize();
+    const r = interpret(page);
+    const items = blockTextItems(r, o.rect, o.mark || null);
+    if (!items.length) return false;
+    const dx = rect ? rect[0] - o.rect[0] : 0; const dy = rect ? rect[1] - o.rect[1] : 0;
+    const crop = page.getCropBox();
+    const fallback = { family: o.family, bold: o.bold, italic: o.italic, color: o.color, size: o.size };
+    const draw = [];
+    for (const row of cellLayout(o.lines, text.split('\n'), o.lineHeight || o.size * 1.2)) {
+      let next = -Infinity;
+      for (const c of row.cells) {
+        const t = c.text.replace(/\s+$/, '');
+        if (!t.trim()) continue;
+        const st = c.style || fallback;
+        const { font, fakeBold, fakeItalic } = await getStyledFont(d, st.family, st, t, readFont);
+        const x = Math.max(c.x + dx, next);
+        const w = font.widthOfTextAtSize(sanitizeFor(font, t), st.size);
+        if (x + w > crop.x + crop.width + 0.5) return false;
+        draw.push({ t, x, y: row.y + dy, font, fakeBold, fakeItalic, st });
+        next = x + w + st.size * 0.25;
+      }
+    }
+    const [open, close] = this.markOps(d, mark || o.mark || newMark());
+    removeTextItems(page, r, items, o.mark || null);
+    page.pushOperators(open);
+    for (const c of draw) drawTextBlock(page, c.font, c.t, [c.x, c.y - c.st.size, c.x + 1e5, c.y + c.st.size], { size: c.st.size, color: c.st.color, lineHeight: c.st.size * 1.2, fakeBold: c.fakeBold, fakeItalic: c.fakeItalic });
+    page.pushOperators(close);
+    return true;
   }
 
   /**
