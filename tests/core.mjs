@@ -962,11 +962,14 @@ test('Incremental saving keeps the original bytes; signatures stay valid through
   assert.match(await textOf(await open(inc), 1), /Contract/);
   assert.equal(incremental.revisionCount(inc), 2);
 
+  // Signed documents are loaded with updateMetadata: false, as DocPilot does (see ops.js). Otherwise pdf-lib sets a new
+  // modification date on loading, which counts as a change of the document information whenever the clock has moved
+  // to the next second since signing; the test then failed now and then.
   // Sign, fill in, sign again: both signatures stay valid; the first reports the permitted changes.
   const p12 = await sign.createDigitalId({ name: 'First Signer', password: 'pw' });
   const s1 = await sign.signPdf(original, { p12, password: 'pw', reason: 'Approved' });
   assert.ok(startsWith(s1, original), 'signing appends');
-  const filled = await PDFDocument.load(s1); filled.getForm().getTextField('name').setText('Bob');
+  const filled = await PDFDocument.load(s1, { updateMetadata: false }); filled.getForm().getTextField('name').setText('Bob');
   const s2 = await incremental.appendUpdate(s1, filled);
   const s3 = await sign.signPdf(s2, { p12, password: 'pw', reason: 'Seen', visible: { page: 0, rect: [300, 100, 500, 160] } });
   const list = await sign.signatureDetails(s3);
@@ -976,12 +979,12 @@ test('Incremental saving keeps the original bytes; signatures stay valid through
   assert.ok(list[0].changes.allowed.includes('form fill') && list[0].changes.allowed.includes('signatures'), JSON.stringify(list[0].changes));
   assert.equal(list[1].changes, null, 'the last signature covers the whole file');
   // Changing the page content after signing is not permitted.
-  const drawn = await PDFDocument.load(s1); drawn.getPage(0).drawText('Changed', { x: 72, y: 700, size: 12, font: await drawn.embedFont(StandardFonts.Helvetica) });
+  const drawn = await PDFDocument.load(s1, { updateMetadata: false }); drawn.getPage(0).drawText('Changed', { x: 72, y: 700, size: 12, font: await drawn.embedFont(StandardFonts.Helvetica) });
   const s4 = await incremental.appendUpdate(s1, drawn);
   assert.deepEqual((await sign.signatureDetails(s4))[0].changes.disallowed, ['page content']);
   // A certification that allows no changes: a comment afterwards is not permitted; a second certification is refused.
   const c1 = await sign.signPdf(original, { p12, password: 'pw', certify: 1 });
-  const commented = await PDFDocument.load(c1);
+  const commented = await PDFDocument.load(c1, { updateMetadata: false });
   ops.addAnnotTo(commented.getPage(0), commented.context.register(commented.context.obj({ Type: 'Annot', Subtype: 'Text', Rect: [10, 10, 30, 30], Contents: PDFString.of('Note') })));
   const c2 = await incremental.appendUpdate(c1, commented);
   const cert = (await sign.signatureDetails(c2))[0];
