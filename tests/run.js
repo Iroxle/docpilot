@@ -1137,8 +1137,14 @@ async function editedBlockFixture(name) {
     }
     // With few tabs the search field is in the middle of the window; more tabs push it aside, the tabs stay readable.
     await page.evaluate(() => window.__app.showHome()); await wait(300);
-    const mid = await page.$eval('#cmd-search', (e) => { const r = e.getBoundingClientRect(); return r.left + r.width / 2 - window.innerWidth / 2; });
-    assert.ok(Math.abs(mid) < 3, `search field in the middle: ${mid}`);
+    // In the middle, unless the window is too narrow for that (the test machine's screen decides the window size):
+    // then the field moves only as far as the tabs or the buttons at the right need.
+    const mid = await page.evaluate(() => {
+      const r = (q) => document.querySelector(q).getBoundingClientRect(); const s = r('#cmd-search');
+      const tabsEnd = Math.max(...[...document.querySelectorAll('#tabs .tab')].map((t) => t.getBoundingClientRect().right));
+      return { off: s.left + s.width / 2 - window.innerWidth / 2, left: s.left, right: s.right, tabsEnd, actions: r('#topbar .tb-right').left, width: window.innerWidth };
+    });
+    assert.ok(Math.abs(mid.off) < 3 || (mid.off < 0 && mid.right >= mid.actions - 14) || (mid.off > 0 && mid.left <= mid.tabsEnd + 14), `search field in the middle: ${JSON.stringify(mid)}`);
     for (let k = 1; k <= 7; k++) { fs.copyFileSync(file('a.pdf'), file(`Quarterly report part ${k}.pdf`)); await page.evaluate((x) => window.__app.openPath(x), file(`Quarterly report part ${k}.pdf`)); }
     await rendered(); await wait(300);
     const bar = await page.evaluate(() => {
