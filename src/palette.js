@@ -50,7 +50,9 @@ export function openPalette(app, initial = '') {
   let shown = initial ? filterEntries(all, initial) : all; let sel = 0;
   const input = h('input', { type: 'search', placeholder: 'Search tools and commands', spellcheck: 'false', 'aria-label': 'Search tools and commands', value: initial, data: { paletteInput: '1' } });
   const list = h('div', { class: 'pal-list', role: 'listbox' });
-  const close = () => scrim.remove();
+  // Esc closes the search wherever the focus is (also before the input has it, e.g. right after a click).
+  const onKey = (e) => { if (e.key === 'Escape' && scrim.isConnected) { e.preventDefault(); e.stopPropagation(); close(); } };
+  const close = () => { scrim.remove(); document.removeEventListener('keydown', onKey, true); };
   const runAt = (k) => { const e = shown[k]; if (!e) return; close(); setTimeout(() => Promise.resolve(e.run()).catch((err) => console.warn(err)), 0); };
   const render = () => {
     list.replaceChildren(...shown.slice(0, 60).map((e, k) => h('button', { class: `pal-item ${k === sel ? 'sel' : ''}`, type: 'button', role: 'option', data: { label: e.label, group: e.group }, onclick: () => runAt(k) },
@@ -76,6 +78,8 @@ export function openPalette(app, initial = '') {
     box.style.marginLeft = `${Math.round(Math.max(8, Math.min(innerWidth - w - 8, field.left + field.width / 2 - w / 2)))}px`;
   }
   document.getElementById('float-root').append(scrim);
+  document.addEventListener('keydown', onKey, true);
   render();
-  setTimeout(() => { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }, 0);
+  const focus = () => { if (!scrim.isConnected) return; input.focus(); input.setSelectionRange(input.value.length, input.value.length); };
+  focus(); setTimeout(focus, 0);
 }

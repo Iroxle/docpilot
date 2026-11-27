@@ -1123,10 +1123,18 @@ async function editedBlockFixture(name) {
     }, [keyCode, modifiers]);
     const mod = MAC ? 'meta' : 'control';
     await page.focus('#viewer');
-    await sendKey('P', [mod, 'shift']); await page.waitForSelector('.palette');
-    await page.keyboard.press('Escape'); await page.waitForSelector('.palette', { state: 'detached' });
-    await sendKey('K', [mod]); await page.waitForSelector('.dlg.pref');
-    await page.click('.dlg.pref .btn:not(.primary)'); await wait(100);
+    if (!MAC) {
+      await sendKey('P', [mod, 'shift']); await page.waitForSelector('.palette');
+      await page.keyboard.press('Escape'); await page.waitForSelector('.palette', { state: 'detached' });
+      await sendKey('K', [mod]); await page.waitForSelector('.dlg.pref');
+      await page.click('.dlg.pref .btn:not(.primary)'); await wait(100);
+    } else {
+      // On a Mac the shortcuts belong to the macOS menu bar, which input sent to the window does not reach: check that
+      // the menu has them.
+      const keys = await app.evaluate(({ Menu }) => { const out = {}; const walk = (m) => m.items.forEach((i) => { if (i.accelerator) out[i.label] = i.accelerator; if (i.submenu) walk(i.submenu); }); walk(Menu.getApplicationMenu()); return out; });
+      assert.equal(keys['Search commands...'], 'CmdOrCtrl+Shift+P', `command search shortcut: ${JSON.stringify(keys)}`);
+      assert.ok(Object.values(keys).includes('CmdOrCtrl+K'), 'Preferences shortcut');
+    }
     // With few tabs the search field is in the middle of the window; more tabs push it aside, the tabs stay readable.
     await page.evaluate(() => window.__app.showHome()); await wait(300);
     const mid = await page.$eval('#cmd-search', (e) => { const r = e.getBoundingClientRect(); return r.left + r.width / 2 - window.innerWidth / 2; });
