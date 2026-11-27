@@ -1,5 +1,5 @@
 // All tools: definition of the groups and their implementation.
-import { h, $, icon, ibtn, toast, errToast, busy, formDialog, messageBox, hexToRgb, rgbToHex, cssColor, fileBase, canvasBytes, normalizeImage, toBase64, fmtSize, contextMenu, inFolder, imageCodec } from './util.js';
+import { h, $, icon, ibtn, toast, errToast, busy, formDialog, messageBox, hexToRgb, rgbToHex, cssColor, fileBase, canvasBytes, normalizeImage, toBase64, fmtSize, contextMenu, inFolder, imageCodec, emptyState } from './util.js';
 import * as ops from './pdf/ops.js';
 import { loadForEdit, saveDoc } from './pdf/ops.js';
 import { writeAnnotations, flattenAnnotationsInDoc, newId } from './pdf/annots.js';
@@ -9,6 +9,12 @@ import * as redact from './pdf/redact.js';
 import * as optimize from './pdf/optimize.js';
 import * as formtools from './formtools.js';
 import * as pdfa from './pdf/pdfa.js';
+import * as marks from './pdf/marks.js';
+import * as images from './pdf/images.js';
+import * as snap from './pdf/snap.js';
+import * as scanfix from './pdf/scanfix.js';
+import { actionWizard, runAction } from './actions.js';
+import { BOXES as boxes } from './pdf/boxes.js';
 import { wordBoxes, rectsOverlap, quadFromRect, rectFromQuad, diffWords, prefixRatio } from './textutil.js';
 import * as conv from './convert.js';
 import { boundsOf } from './overlay.js';
@@ -21,6 +27,15 @@ const IMG_FILTER = [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 
 const SIZES = [['595.28x841.89', 'A4 portrait'], ['841.89x595.28', 'A4 landscape'], ['841.89x1190.55', 'A3 portrait'], ['612x792', 'Letter'], ['419.53x595.28', 'A5']];
 const parseSize = (s) => { const [width, height] = s.split('x').map(Number); return { width, height }; };
 const MM = 2.834645669;
+/**
+ * One color per tool group (decided 2026-11-26, Trello card "Neue Oberfläche"): the symbols in the tools pane and the
+ * tiles on the home page. The dark appearance makes them a little lighter (see .tint in styles.css).
+ */
+export const GROUP_COLORS = {
+  edit: '#d6336c', comment: '#e8a10c', stamp: '#e8a10c', convert: '#0e9aa7', create: '#e03131', combine: '#5c6ac4', organize: '#2f9e44',
+  fillsign: '#9c36b5', certs: '#1c7ed6', form: '#7048e8', protect: '#3b5bdb', redact: '#c2255c', ocr: '#37b24d', compress: '#f76707',
+  measure: '#1098ad', actions: '#74b816', compare: '#6741d9', access: '#228be6', preflight: '#0ca678', advanced: '#5c7080',
+};
 /** The message after form fields were renamed to keep same-named fields of different files apart. */
 const renamedNote = (list) => `${list.length === 1 ? 'A form field was' : `${list.length} form fields were`} renamed to keep it apart from a field of the same name: ${list.slice(0, 3).map(([a, b]) => `${a} → ${b}`).join(', ')}${list.length > 3 ? ', ...' : ''}`;
 
@@ -30,13 +45,14 @@ export class Tools {
     this.measure = { ratio: 1, unit: 'mm' };
     this.registerTools();
     this.groups = this.defineGroups();
+    for (const g of this.groups) g.color = GROUP_COLORS[g.id] || GROUP_COLORS.advanced;
   }
   get doc() { return this.app.doc; }
   get viewer() { return this.app.viewer; }
   get overlay() { return this.app.overlay; }
   guard(fn) { return async (...a) => { try { return await fn(...a); } catch (e) { errToast(e); return undefined; } }; }
   mutate(fn, o) { return this.doc.mutate(fn, o); }
-  range(label = 'Pages') { return { k: 'range', label, value: `1-${this.doc.numPages}`, placeholder: 'z.B. 1-3, 5' }; }
+  range(label = 'Pages') { return { k: 'range', label, value: `1-${this.doc.numPages}`, placeholder: 'e.g. 1-3, 5' }; }
   pagesOf(v) { return ops.parseRange(v.range, this.doc.numPages); }
   validateRange = (v) => { try { const p = this.pagesOf(v); return p.length ? null : 'Please specify pages.'; } catch (e) { return e.message; } };
 
@@ -56,23 +72,23 @@ export class Tools {
       ] },
       { id: 'stamp', label: 'Stamp', icon: 'stamp', hidden: true, extra: () => this.stampGrid(), items: [R('Custom stamp from image...', 'img', () => this.customStamp())] },
       { id: 'convert', label: 'Export PDF', icon: 'convert', desc: 'To Word, Excel, PowerPoint, images', items: [
-        R('Microsoft Word (.docx)', 'convert', () => this.exportAs('docx')), R('Microsoft Excel (.xlsx)', 'convert', () => this.exportAs('xlsx')), R('Microsoft PowerPoint (.pptx)', 'convert', () => this.exportAs('pptx')), R('PNG image', 'img', () => this.exportAs('png')), R('JPEG image', 'img', () => this.exportAs('jpeg')), R('HTML web page', 'convert', () => this.exportAs('html')), R('Rich Text (.rtf)', 'convert', () => this.exportAs('rtf')), R('Plain text (.txt)', 'text', () => this.exportAs('txt')), R('PDF/A...', 'preflight', () => this.pdfa()),
+        R('Microsoft Word (.docx)', 'convert', () => this.exportAs('docx')), R('Microsoft Excel (.xlsx)', 'convert', () => this.exportAs('xlsx')), R('Microsoft PowerPoint (.pptx)', 'convert', () => this.exportAs('pptx')), R('PNG image', 'img', () => this.exportAs('png')), R('JPEG image', 'img', () => this.exportAs('jpeg')), R('HTML web page', 'convert', () => this.exportAs('html')), R('Rich Text (.rtf)', 'convert', () => this.exportAs('rtf')), R('Plain text (.txt)', 'text', () => this.exportAs('txt')), R('Markdown (.md)', 'text', () => this.exportAs('md')), R('All images...', 'img', () => this.exportImages()), R('PDF/A...', 'preflight', () => this.pdfa()),
       ] },
       { id: 'create', label: 'Create PDF', icon: 'blank', desc: 'From files, scanner, clipboard', items: [
-        R('From file...', 'open', () => this.createFromFile(), false), R('From scanner...', 'scan', () => this.createFromScanner(), false), R('From clipboard', 'dup', () => this.createFromClipboard(), false), R('Blank page', 'blank', () => this.createBlank(), false),
+        R('From file...', 'open', () => this.createFromFile(), false), R('Several files as separate PDFs...', 'pages', () => this.createSeparate(), false), R('From scanner...', 'scan', () => this.createFromScanner(), false), R('From clipboard', 'dup', () => this.createFromClipboard(), false), R('Blank page', 'blank', () => this.createBlank(), false),
       ] },
       { id: 'combine', label: 'Combine files', icon: 'combine', desc: 'Several files into one PDF', direct: this.guard(() => this.combine()), noDoc: true },
       { id: 'organize', label: 'Organize pages', icon: 'pages', desc: 'Move, rotate, delete, split', onOpen: () => this.app.organizer.show(), onClose: () => this.app.organizer.hide(), items: [
-        R('Split document...', 'split', () => this.split()), R('Insert pages from file...', 'insert', () => this.insertFromFile(this.viewer.current + 1)), R('Insert blank page', 'blank', () => this.insertBlankAt(this.viewer.current + 1)),
+        R('Split document...', 'split', () => this.split()), R('Reverse pages...', 'reverse', () => this.reversePagesDialog()), R('Insert pages from file...', 'insert', () => this.insertFromFile(this.viewer.current + 1)), R('Insert blank page', 'blank', () => this.insertBlankAt(this.viewer.current + 1)),
       ] },
       { id: 'fillsign', label: 'Fill and sign', icon: 'sign', desc: 'Fill in and sign forms', extra: () => this.signSummary(), items: [
-        T('fs-text', 'Enter text', 'text'), T('fs-check', 'Check mark', 'check'), T('fs-cross', 'Cross', 'cross'), T('fs-dot', 'Points', 'dot'), T('fs-date', 'Date', 'date'), R('Place signature', 'sign', () => this.placeSignature('signature')), R('Place initials', 'sign', () => this.placeSignature('initials')), R('Set up signature...', 'gear', () => this.signSetup('signature')), R('Set up initials...', 'gear', () => this.signSetup('initials')),
+        T('fs-text', 'Enter text', 'text'), T('fs-check', 'Check mark', 'check'), T('fs-cross', 'Cross', 'cross'), T('fs-dot', 'Points', 'dot'), T('fs-date', 'Date', 'date'), T('fs-line', 'Line', 'line'), R('Place signature', 'sign', () => this.placeSignature('signature')), R('Place initials', 'sign', () => this.placeSignature('initials')), R('Set up signature...', 'gear', () => this.signSetup('signature')), R('Set up initials...', 'gear', () => this.signSetup('initials')),
       ] },
       { id: 'certs', label: 'Use certificates', icon: 'cert', desc: 'Sign digitally and validate', items: [
         T('digital-sign', 'Sign digitally', 'cert'), R('Sign digitally (invisible)...', 'cert', () => this.digitalSign(null)), T('certify-sign', 'Certify (visible signature)', 'cert'), R('Certify (invisible signature)...', 'cert', () => this.digitalSign(null, true)), R('Create digital ID...', 'plus', () => this.createId(), false), R('Validate all signatures', 'preflight', () => this.app.panels.show('signatures')),
       ] },
       { id: 'form', label: 'Prepare form', icon: 'form', desc: 'Create fields, manage data', extra: () => this.formFieldsList(), items: [
-        { sub: 'Fields' }, R('Detect fields automatically...', 'search', () => this.app.fieldDetect.start()), T('form-text', 'Text box', 'textbox'), T('form-multiline', 'Multiline text field', 'textbox'), T('form-checkbox', 'Check box', 'chk'), T('form-radio', 'Radio button', 'radio'), T('form-dropdown', 'Dropdown', 'dd'), T('form-list', 'List box', 'list'), T('form-button', 'Button', 'btn'), T('form-date', 'Date field', 'date'), T('form-image', 'Image field', 'img'), T('form-table', 'Text field table', 'list'), T('form-signature', 'Signature field', 'cert'),
+        { sub: 'Fields' }, R('Detect fields automatically...', 'search', () => this.app.fieldDetect.start()), R('Convert XFA form...', 'form', () => this.convertXfaDialog()), T('form-text', 'Text box', 'textbox'), T('form-multiline', 'Multiline text field', 'textbox'), T('form-checkbox', 'Check box', 'chk'), T('form-radio', 'Radio button', 'radio'), T('form-dropdown', 'Dropdown', 'dd'), T('form-list', 'List box', 'list'), T('form-button', 'Button', 'btn'), T('form-date', 'Date field', 'date'), T('form-image', 'Image field', 'img'), T('form-table', 'Text field table', 'list'), T('form-signature', 'Signature field', 'cert'),
         { sub: 'Behaviour' }, R('Field properties...', 'gear', () => formtools.fieldProperties(this)), R('Calculation order...', 'list', () => formtools.calculationOrder(this)), R('Tab order...', 'list', () => formtools.tabOrder(this)),
         { sub: 'Form data' }, R('Highlight form fields', 'highlight', () => this.toggleFormHighlight()), R('Export data...', 'share', () => formtools.exportFormData(this)), R('Import data...', 'open', () => formtools.importFormData(this)), R('Reset form...', 'undo', () => this.resetForm()), R('Flatten form...', 'compress', () => this.flattenForm()),
       ] },
@@ -82,20 +98,70 @@ export class Tools {
       { id: 'redact', label: 'Redact', icon: 'redact', desc: 'Permanently remove content', extra: () => h('div', { class: 'lp-note' }, 'Marks stay editable until you choose "Apply redactions". After that, the content is permanently removed from the document.'), items: [
         T('redact-text', 'Mark up text', 'text'), T('redact-area', 'Mark area', 'rect'), R('Mark pages...', 'pages', () => this.redactPages()), R('Find and mark...', 'search', () => this.searchRedact()), R('Redaction properties...', 'gear', () => this.redactProperties(), false), R('Apply redactions', 'check', () => this.applyRedactions()),
       ] },
-      { id: 'ocr', label: 'Scan & OCR', icon: 'scan', desc: 'Recognize text in scans', items: [R('Recognize text...', 'scan', () => this.ocr()), R('Straighten page...', 'rotR', () => this.deskew()), R('Create from scanner...', 'scan', () => this.createFromScanner(), false)] },
+      { id: 'ocr', label: 'Scan & OCR', icon: 'scan', desc: 'Recognize text in scans', items: [R('Recognize text...', 'scan', () => this.ocr()), R('Recognize text in several files...', 'scan', () => this.ocrFiles(), false), R('Review recognized text...', 'search', () => this.ocrReview()), R('Enhance scanned pages...', 'bg', () => this.enhanceScanDialog()), R('Straighten photo (perspective)...', 'crop', () => this.perspectiveDialog()), R('Straighten page...', 'rotR', () => this.deskew()), R('Create from scanner...', 'scan', () => this.createFromScanner(), false)] },
       { id: 'compress', label: 'Compress PDF', icon: 'compress', desc: 'Reduce file size', items: [R('Reduce file size...', 'compress', () => this.compress()), R('Advanced optimization...', 'gear', () => this.compressAdvanced())] },
-      { id: 'measure', label: 'Measure', icon: 'measure', desc: 'Distance, perimeter, area', items: [T('measure-dist', 'Distance', 'line'), T('measure-perimeter', 'Perimeter', 'polyline'), T('measure-area', 'Area', 'poly'), R('Set scale...', 'ruler', () => this.scaleDialog())] },
+      { id: 'measure', label: 'Measure', icon: 'measure', desc: 'Distance, perimeter, area', items: [T('measure-dist', 'Distance', 'line'), T('measure-perimeter', 'Perimeter', 'polyline'), T('measure-area', 'Area', 'poly'), R('Set scale...', 'ruler', () => this.scaleDialog()), R('Snap to lines and points', 'chk', () => this.toggleSnap()), R('Export measurements (CSV)...', 'share', () => this.exportMeasurements())] },
+      { id: 'actions', label: 'Action wizard', icon: 'list', desc: 'Run steps on several files', direct: this.guard(() => actionWizard(this.app)), noDoc: true },
       { id: 'compare', label: 'Compare files', icon: 'compare', desc: 'Differences between two PDFs', direct: this.guard(() => this.compare()) },
-      { id: 'access', label: 'Accessibility', icon: 'access', desc: 'Check and read out loud', items: [R('Quick check', 'preflight', () => this.accessCheck()), R('Set title and language...', 'text', () => this.titleLang()), R('Read page aloud', 'speak', () => this.app.speak('page')), R('Stop reading', 'x', () => this.app.speak('stop'))] },
-      { id: 'preflight', label: 'Print production', icon: 'preflight', desc: 'Preflight and fonts', items: [R('Preflight report', 'preflight', () => this.preflight()), R('Check PDF/A compliance', 'preflight', () => this.pdfaCheck()), R('Crop for prepress...', 'crop', () => this.cropDialog())] },
+      { id: 'access', label: 'Accessibility', icon: 'access', desc: 'Tag, check and read out loud', items: [R('Accessibility check', 'preflight', () => this.accessCheck()), R('Automatically tag document', 'access', () => this.autoTagDialog()), R('Tag form fields and links', 'form', () => this.tagFieldsDialog()), R('Alternate text for images...', 'img', () => this.altTextDialog()), R('Tags panel', 'list', () => this.app.panels.show('tags')), R('Set title and language...', 'text', () => this.titleLang()), R('Read page aloud', 'speak', () => this.app.speak('page')), R('Stop reading', 'x', () => this.app.speak('stop'))] },
+      { id: 'preflight', label: 'Print production', icon: 'preflight', desc: 'Preflight and fonts', items: [R('Preflight report', 'preflight', () => this.preflight()), R('Check PDF/A compliance', 'preflight', () => this.pdfaCheck()), R('Crop for prepress...', 'crop', () => this.cropDialog()), R('Set page boxes...', 'boxes', () => this.pageBoxesDialog()), R('Convert to grayscale...', 'bg', () => this.grayscaleDialog()), R('Fix hairlines...', 'line', () => this.hairlinesDialog()), R('Printer marks...', 'crop', () => this.printerMarksDialog())] },
       { id: 'advanced', label: 'Document check and JavaScript', icon: 'js', desc: 'Open options, scripts', items: [R('Open options...', 'gear', () => this.initialView()), R('Document JavaScript...', 'js', () => this.javascript()), R('Document properties...', 'info', () => this.app.run('properties'))] },
     ];
   }
 
   // --- Left pane -----------------------------------------------------------------------
+  /** All tools: the groups with their colored symbols; the search field above filters groups and tools while typing. */
   renderAll() {
+    const search = h('input', { class: 'lp-search', type: 'search', placeholder: 'Search tools', spellcheck: 'false', 'aria-label': 'Search tools', value: this.toolQuery || '', data: { toolSearch: '1' } });
+    const body = h('div', { class: 'lp-body' });
+    const fill = () => body.replaceChildren(...this.toolRows(search.value));
+    search.addEventListener('input', () => { this.toolQuery = search.value; fill(); });
+    search.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Escape') { e.preventDefault(); if (search.value) { search.value = ''; this.toolQuery = ''; fill(); } else search.blur(); }
+      else if (e.key === 'Enter') { e.preventDefault(); body.querySelector('.lp-item')?.click(); }
+      else if (e.key === 'ArrowDown') { e.preventDefault(); body.querySelector('.lp-item')?.focus(); }
+    });
+    // Arrow keys move through the list, up from the first row back into the search field.
+    body.addEventListener('keydown', (e) => {
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+      const rows = [...body.querySelectorAll('.lp-item')]; const k = rows.indexOf(document.activeElement);
+      if (k < 0) return;
+      e.preventDefault(); e.stopPropagation();
+      if (e.key === 'ArrowUp' && k === 0) search.focus(); else rows[Math.max(0, Math.min(rows.length - 1, k + (e.key === 'ArrowDown' ? 1 : -1)))].focus();
+    });
     this.left.replaceChildren(h('div', { class: 'lp-head' }, h('span', { class: 't' }, 'All tools'), ibtn('chevL', 'Hide', () => this.app.run('toggle-left'))),
-      h('div', { class: 'lp-body' }, this.groups.filter((g) => !g.hidden).map((g) => h('button', { class: 'lp-item', type: 'button', data: { group: g.id }, onclick: () => this.openGroup(g.id) }, icon(g.icon), g.label))));
+      h('label', { class: 'lp-find' }, icon('search'), search), body);
+    fill();
+  }
+  /** Rows of the list: all groups, or for a search the matching groups and then the matching tools of every group. */
+  toolRows(q) {
+    const groups = this.groups.filter((g) => !g.hidden);
+    const row = (g) => h('button', { class: 'lp-item tint', type: 'button', data: { group: g.id }, style: { '--gc': g.color }, onclick: () => this.openGroup(g.id) }, icon(g.icon), g.label);
+    const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+    if (!words.length) return groups.map(row);
+    const hit = (s) => words.every((w) => s.toLowerCase().includes(w));
+    const tools = []; const seen = new Set();
+    for (const g of this.groups) {
+      for (const it of g.items || []) {
+        const key = `${g.id}|${it.label}`;
+        if (it.sub || seen.has(key) || !hit(it.label)) continue;
+        seen.add(key); tools.push([g, it]);
+      }
+    }
+    const out = groups.filter((g) => hit(`${g.label} ${g.desc || ''}`)).map(row);
+    if (tools.length) {
+      out.push(h('div', { class: 'lp-sub' }, 'Tools'), ...tools.map(([g, it]) => h('button', { class: 'lp-item tint', type: 'button', data: it.tool ? { tool: it.tool, group: g.id } : { action: it.label, group: g.id }, style: { '--gc': g.color }, onclick: () => { this.toolQuery = ''; this.runItem(g, it); if (!this.group) this.renderAll(); } },
+        icon(it.icon), h('span', { class: 'lp-l' }, it.label), h('small', { class: 'lp-g' }, g.label))));
+    }
+    if (!out.length) out.push(emptyState('search', 'No tool matches', 'Try another word, or search all commands in the title bar.'));
+    return out;
+  }
+  /** A tool chosen in the search: tools on the page open their group first; commands run directly. */
+  runItem(g, it) {
+    if (it.tool) { this.openGroup(g.id); if (this.overlay.tool !== it.tool) this.selectTool(it.tool); return; }
+    if (it.needsDoc && !this.doc) { toast('Please open a document first.'); return; }
+    it.run();
   }
   closeGroup() {
     const g = this.group;
@@ -119,7 +185,7 @@ export class Tools {
   }
   renderGroup() {
     const g = this.group;
-    const body = h('div', { class: 'lp-body' }, (g.items || []).map((it) => {
+    const body = h('div', { class: 'lp-body tint', style: { '--gc': g.color } }, (g.items || []).map((it) => {
       if (it.sub) return h('div', { class: 'lp-sub' }, it.sub);
       const active = it.tool && this.overlay.tool === it.tool;
       return h('button', { class: `lp-item ${active ? 'active' : ''}`, type: 'button', data: it.tool ? { tool: it.tool } : { action: it.label }, onclick: () => (it.tool ? this.selectTool(it.tool) : it.run()) }, icon(it.icon), it.label);
@@ -135,6 +201,7 @@ export class Tools {
     if (this.app.editor.on && t !== 'edit') this.app.editor.commitInput();
     this.app.organizer.hide();
     this.overlay.setTool(this.overlay.tool === t ? (this.app.editor.on ? 'edit' : 'select') : t, opts);
+    if (t.startsWith('measure-')) this.snapGeom(this.viewer.current);
   }
 
   // --- Tools on the page -------------------------------------------------------------------
@@ -165,6 +232,8 @@ export class Tools {
     click('fs-cross', (i, p) => this.fsMark(i, p, 'cross'));
     click('fs-dot', (i, p) => ov().add({ type: 'ellipse', page: i, rect: [p[0] - 4, p[1] - 4, p[0] + 4, p[1] + 4], color: [0, 0, 0], fill: [0, 0, 0], width: 1, opacity: 1, contents: '' }));
     click('fs-date', (i, p) => this.fsDate(i, p));
+    // A line, e.g. to strike out a field or underline a signature; Shift keeps it horizontal or vertical.
+    reg('fs-line', (i, rect, p0, e, p1) => (Math.hypot(p1[0] - p0[0], p1[1] - p0[1]) < 2 ? null : ov().add({ type: 'line', page: i, rect, points: [p0, p1], color: [0, 0, 0], width: 1.2, opacity: 1, contents: '' })), { needsDrag: true, keep: true });
   }
 
   async addTextAt(i, rect, p0) {
@@ -242,15 +311,38 @@ export class Tools {
     toast('Snapshot copied to clipboard', 'ok');
   }
 
+  /**
+   * Header & footer, watermark, background and Bates numbers can be changed and removed after they were added:
+   * when the document already has marks of the kind, the user chooses Update (the dialog opens with the settings
+   * the marks were made with and replaces them), Remove, or Add another. Returns {replace, s (settings), range} or null.
+   */
+  async markChoice(kind, label) {
+    const m = (await ops.listMarks(this.doc.bytes)).find((x) => x.kind === kind);
+    if (!m) return { replace: false, s: {} };
+    const where = m.pages.length === this.doc.numPages ? 'on all pages' : `on page${m.pages.length > 1 ? 's' : ''} ${marks.rangeText(m.pages)}`;
+    const c = await messageBox(label, `This document already has ${label.toLowerCase()} ${where}. Update it, remove it, or add another?`, ['Update', 'Remove', 'Add another', 'Cancel'], { cancel: 3 });
+    if (c === 3) return null;
+    if (c === 1) {
+      await this.mutate((b) => ops.removeMarks(b, kind));
+      toast(`${label} removed`, 'ok');
+      return null;
+    }
+    return c === 0 ? { replace: true, s: m.settings || {}, range: marks.rangeText(m.pages) } : { replace: false, s: {} };
+  }
+  rangeFrom(m) { const f = this.range(); if (m.range) f.value = m.range; return f; }
   async headerFooter() {
+    const m = await this.markChoice('HeaderFooter', 'Header & footer');
+    if (!m) return;
+    const s = m.s; const v = (k, d) => s[k] ?? d;
     const r = await formDialog('Header & footer', [
       { type: 'info', label: 'Placeholders: {page}, {pages}, {date}, {file}' },
-      { k: 'left', label: 'Header left' }, { k: 'center', label: 'Header center' }, { k: 'right', label: 'Header right' },
-      { k: 'footLeft', label: 'Footer left' }, { k: 'footCenter', label: 'Footer center' }, { k: 'footRight', label: 'Footer right', value: 'Page {page} of {pages}' },
-      { k: 'size', label: 'Font size', type: 'number', value: 10, min: 4, max: 72 }, { k: 'color', label: 'Color', type: 'color', value: '#181210' }, { k: 'margin', label: 'Margin (mm)', type: 'number', value: 10, min: 0 }, { k: 'startNumber', label: 'First number', type: 'number', value: 1, min: 0 }, this.range(),
-    ], { validate: this.validateRange, ok: 'Add' });
+      { k: 'left', label: 'Header left', value: v('left', '') }, { k: 'center', label: 'Header center', value: v('center', '') }, { k: 'right', label: 'Header right', value: v('right', '') },
+      { k: 'footLeft', label: 'Footer left', value: v('footLeft', '') }, { k: 'footCenter', label: 'Footer center', value: v('footCenter', '') }, { k: 'footRight', label: 'Footer right', value: v('footRight', m.replace ? '' : 'Page {page} of {pages}') },
+      { k: 'size', label: 'Font size', type: 'number', value: v('size', 10), min: 4, max: 72 }, { k: 'color', label: 'Color', type: 'color', value: v('color', '#181210') }, { k: 'margin', label: 'Margin (mm)', type: 'number', value: v('margin', 10), min: 0 }, { k: 'startNumber', label: 'First number', type: 'number', value: v('startNumber', 1), min: 0 }, this.rangeFrom(m),
+    ], { validate: this.validateRange, ok: m.replace ? 'Update' : 'Add' });
     if (!r) return;
-    await this.mutate((b) => ops.addHeaderFooter(b, { ...r, margin: r.margin * MM, pages: this.pagesOf(r), fileName: this.doc.name }, readFont));
+    const settings = { ...r }; delete settings.range;
+    await this.mutate((b) => ops.addHeaderFooter(b, { ...r, margin: r.margin * MM, pages: this.pagesOf(r), fileName: this.doc.name, replace: m.replace, settings }, readFont));
   }
   async pageNumbers() {
     const r = await formDialog('Insert page numbers', [
@@ -258,33 +350,113 @@ export class Tools {
       { k: 'fmt', label: 'Format', type: 'select', options: [['{page}', '1'], ['Page {page}', 'Page 1'], ['Page {page} of {pages}', 'Page 1 of 5'], ['{page}/{pages}', '1/5']], value: '{page}' }, this.range(),
     ], { validate: this.validateRange, ok: 'Insert' });
     if (!r) return;
-    await this.mutate((b) => ops.addHeaderFooter(b, { [r.pos]: r.fmt, pages: this.pagesOf(r) }, readFont));
+    // Page numbers are a header or footer: "Header & footer" changes or removes them later.
+    await this.mutate((b) => ops.addHeaderFooter(b, { [r.pos]: r.fmt, pages: this.pagesOf(r), settings: { [r.pos]: r.fmt, size: 10, margin: 28 / MM } }, readFont));
   }
   async watermark() {
+    const m = await this.markChoice('Watermark', 'Watermark');
+    if (!m) return;
+    const s = m.s; const v = (k, d) => s[k] ?? d;
     const r = await formDialog('Watermark', [
-      { k: 'kind', label: 'Type', type: 'select', options: [['text', 'Text'], ['image', 'Image from file']], value: 'text' },
-      { k: 'text', label: 'Text', value: 'CONFIDENTIAL' }, { k: 'size', label: 'Font size', type: 'number', value: 64, min: 6, max: 300 }, { k: 'color', label: 'Color', type: 'color', value: '#0e7c86' },
-      { k: 'scale', label: 'Image size (%)', type: 'number', value: 50, min: 1, max: 500 }, { k: 'opacity', label: 'Opacity (%)', type: 'number', value: 30, min: 1, max: 100 }, { k: 'rotation', label: 'Rotation (degrees)', type: 'number', value: 45, min: -180, max: 180 },
-      { k: 'position', label: 'Position', type: 'select', options: [['center', 'Center'], ['top', 'Top'], ['bottom', 'Bottom'], ['top-left', 'Top left'], ['top-right', 'Top right'], ['bottom-left', 'Bottom left'], ['bottom-right', 'Bottom right']], value: 'center' }, this.range(),
-    ], { validate: (v) => this.validateRange(v) || (v.kind === 'text' && !v.text.trim() ? 'Please enter text.' : null), ok: 'Add' });
+      { k: 'kind', label: 'Type', type: 'select', options: [['text', 'Text'], ['image', 'Image from file']], value: v('kind', 'text') },
+      { k: 'text', label: 'Text', value: v('text', 'CONFIDENTIAL') }, { k: 'size', label: 'Font size', type: 'number', value: v('size', 64), min: 6, max: 300 }, { k: 'color', label: 'Color', type: 'color', value: v('color', '#0e7c86') },
+      { k: 'scale', label: 'Image size (%)', type: 'number', value: v('scale', 50), min: 1, max: 500 }, { k: 'opacity', label: 'Opacity (%)', type: 'number', value: v('opacity', 30), min: 1, max: 100 }, { k: 'rotation', label: 'Rotation (degrees)', type: 'number', value: v('rotation', 45), min: -180, max: 180 },
+      { k: 'position', label: 'Position', type: 'select', options: [['center', 'Center'], ['top', 'Top'], ['bottom', 'Bottom'], ['top-left', 'Top left'], ['top-right', 'Top right'], ['bottom-left', 'Bottom left'], ['bottom-right', 'Bottom right']], value: v('position', 'center') },
+      { k: 'behind', label: 'Behind the page content', type: 'checkbox', value: v('behind', false) }, this.rangeFrom(m),
+    ], { validate: (x) => this.validateRange(x) || (x.kind === 'text' && !x.text.trim() ? 'Please enter text.' : null), ok: m.replace ? 'Update' : 'Add' });
     if (!r) return;
-    const o = { size: r.size, color: r.color, opacity: r.opacity / 100, rotation: r.rotation, position: r.position, pages: this.pagesOf(r) };
+    const settings = { ...r }; delete settings.range;
+    const o = { size: r.size, color: r.color, opacity: r.opacity / 100, rotation: r.rotation, position: r.position, behind: r.behind, pages: this.pagesOf(r), replace: m.replace, settings };
     if (r.kind === 'image') { const im = await this.chooseImage('Watermark image'); if (!im) return; Object.assign(o, { image: im.bytes, mime: im.mime, scale: r.scale / 100 }); } else o.text = r.text;
     await this.mutate((b) => ops.addWatermark(b, o, readFont));
   }
   async background() {
-    const r = await formDialog('Background', [{ k: 'color', label: 'Color', type: 'color', value: '#eef8f8' }, { k: 'opacity', label: 'Opacity (%)', type: 'number', value: 100, min: 1, max: 100 }, this.range()], { validate: this.validateRange, ok: 'Add' });
-    if (r) await this.mutate((b) => ops.addBackground(b, { color: r.color, opacity: r.opacity / 100, pages: this.pagesOf(r) }));
+    const m = await this.markChoice('Background', 'Background');
+    if (!m) return;
+    const s = m.s;
+    const r = await formDialog('Background', [{ k: 'color', label: 'Color', type: 'color', value: s.color ?? '#eef8f8' }, { k: 'opacity', label: 'Opacity (%)', type: 'number', value: s.opacity ?? 100, min: 1, max: 100 }, this.rangeFrom(m)], { validate: this.validateRange, ok: m.replace ? 'Update' : 'Add' });
+    if (r) await this.mutate((b) => ops.addBackground(b, { color: r.color, opacity: r.opacity / 100, pages: this.pagesOf(r), replace: m.replace, settings: { color: r.color, opacity: r.opacity } }));
   }
   async bates() {
-    const r = await formDialog('Bates numbering', [{ k: 'prefix', label: 'Prefix', value: 'DP-' }, { k: 'suffix', label: 'Suffix' }, { k: 'start', label: 'Start number', type: 'number', value: 1, min: 0 }, { k: 'digits', label: 'Digits', type: 'number', value: 6, min: 1, max: 15 }, { k: 'position', label: 'Position', type: 'select', options: [['bottom-right', 'Bottom right'], ['bottom-left', 'Bottom left'], ['top-right', 'Top right'], ['top-left', 'Top left'], ['bottom', 'Bottom center']], value: 'bottom-right' }, this.range()], { validate: this.validateRange, ok: 'Add' });
-    if (r) await this.mutate((b) => ops.addBates(b, { ...r, pages: this.pagesOf(r) }, readFont));
+    const m = await this.markChoice('Bates', 'Bates numbering');
+    if (!m) return;
+    const s = m.s; const v = (k, d) => s[k] ?? d;
+    const r = await formDialog('Bates numbering', [{ k: 'prefix', label: 'Prefix', value: v('prefix', 'DP-') }, { k: 'suffix', label: 'Suffix', value: v('suffix', '') }, { k: 'start', label: 'Start number', type: 'number', value: v('start', 1), min: 0 }, { k: 'digits', label: 'Digits', type: 'number', value: v('digits', 6), min: 1, max: 15 }, { k: 'position', label: 'Position', type: 'select', options: [['bottom-right', 'Bottom right'], ['bottom-left', 'Bottom left'], ['top-right', 'Top right'], ['top-left', 'Top left'], ['bottom', 'Bottom center']], value: v('position', 'bottom-right') }, this.rangeFrom(m)], { validate: this.validateRange, ok: m.replace ? 'Update' : 'Add' });
+    if (!r) return;
+    const settings = { ...r }; delete settings.range;
+    await this.mutate((b) => ops.addBates(b, { ...r, pages: this.pagesOf(r), replace: m.replace, settings }, readFont));
   }
   async pageLabels() {
     const r = await formDialog('Page labels', [{ k: 'from', label: 'From page', type: 'number', value: 1, min: 1, max: this.doc.numPages }, { k: 'style', label: 'Style', type: 'select', options: [['D', '1, 2, 3'], ['r', 'i, ii, iii'], ['R', 'I, II, III'], ['a', 'a, b, c'], ['A', 'A, B, C']], value: 'D' }, { k: 'prefix', label: 'Prefix' }, { k: 'start', label: 'Start with', type: 'number', value: 1, min: 1 }]);
     if (!r) return;
     const ranges = r.from > 1 ? [{ from: 0, style: 'D' }, { from: r.from - 1, style: r.style, prefix: r.prefix, start: r.start }] : [{ from: 0, style: r.style, prefix: r.prefix, start: r.start }];
     await this.mutate((b) => ops.setPageLabels(b, ranges));
+  }
+
+  async reversePagesDialog(list) {
+    const r = await formDialog('Reverse pages', [{ type: 'info', label: 'The chosen pages change places in reverse order; the other pages stay where they are.' }, { ...this.range(), value: list?.length > 1 ? marks.rangeText(list) : `1-${this.doc.numPages}` }], { validate: (v) => this.validateRange(v) || (this.pagesOf(v).length < 2 ? 'Please choose at least two pages.' : null), ok: 'Reverse' });
+    if (r) await this.mutate((b) => ops.reversePages(b, this.pagesOf(r)));
+  }
+  /** Set page boxes: crop, bleed, trim, art or media box from margins, or back to its default. */
+  async pageBoxesDialog() {
+    const i = this.viewer.current;
+    const cur = await ops.readPageBoxes(this.doc.bytes, i);
+    const mm = (v) => Math.round((v / MM) * 10) / 10;
+    const fmt = (r) => `${mm(r[2] - r[0])} x ${mm(r[3] - r[1])} mm`;
+    const facts = h('table', { class: 'tbl' }, boxes.map(([k, l]) => h('tr', {}, h('th', {}, l), h('td', {}, `${fmt(cur.boxes[k])}${cur.own[k] || k === 'MediaBox' ? '' : ' (not set)'}`))));
+    const margins = (k) => { const m = cur.boxes.MediaBox; const b = cur.boxes[k]; return { left: mm(b[0] - m[0]), bottom: mm(b[1] - m[1]), right: mm(m[2] - b[2]), top: mm(m[3] - b[3]) }; };
+    const m0 = margins('TrimBox');
+    const r = await formDialog('Set page boxes', [
+      { type: 'info', label: `Boxes of page ${i + 1}:` }, { type: 'node', node: facts },
+      { k: 'box', label: 'Box', type: 'select', options: boxes.filter(([k]) => k !== 'MediaBox'), value: 'TrimBox' },
+      { k: 'mode', label: 'Action', type: 'select', options: [['margins', 'Set from margins (inward from the media box)'], ['remove', 'Remove (back to its default)']], value: 'margins' },
+      { k: 'top', label: 'Top (mm)', type: 'number', value: m0.top, min: 0, step: 0.1, showIf: (v) => v.mode === 'margins' }, { k: 'bottom', label: 'Bottom (mm)', type: 'number', value: m0.bottom, min: 0, step: 0.1, showIf: (v) => v.mode === 'margins' },
+      { k: 'left', label: 'Left (mm)', type: 'number', value: m0.left, min: 0, step: 0.1, showIf: (v) => v.mode === 'margins' }, { k: 'right', label: 'Right (mm)', type: 'number', value: m0.right, min: 0, step: 0.1, showIf: (v) => v.mode === 'margins' }, this.range(),
+    ], { validate: this.validateRange, ok: 'Apply' });
+    if (!r) return;
+    const spec = r.mode === 'remove' ? { remove: true } : { margins: [r.left, r.bottom, r.right, r.top].map((v) => (v || 0) * MM) };
+    await this.mutate((b) => ops.setPageBox(b, this.pagesOf(r), r.box, spec));
+    toast(`${boxes.find(([k]) => k === r.box)[1]} ${r.mode === 'remove' ? 'removed' : 'set'}`, 'ok');
+  }
+
+  /** Print production: convert every colour (text, graphics, images) to gray. */
+  async grayscaleDialog() {
+    const r = await formDialog('Convert to grayscale', [
+      { type: 'info', label: 'Text, graphics and images become gray by their brightness; pure black stays black. No colour profile is used, so the result is not calibrated for a press.' },
+      { k: 'images', label: 'Convert images too', type: 'checkbox', value: true }, { k: 'annotations', label: 'Convert comments and form fields too', type: 'checkbox', value: true }, this.range(),
+    ], { validate: this.validateRange, ok: 'Convert' });
+    if (!r) return;
+    let res = null;
+    await this.mutate(async (b) => { res = await ops.convertToGray(b, this.pagesOf(r), { images: r.images, annotations: r.annotations, codec: imageCodec }); return res; });
+    const left = res.imagesLeft ? ` ${res.imagesLeft} image${res.imagesLeft === 1 ? '' : 's'} could not be converted.` : '';
+    toast(res.colours || res.images ? `Converted to grayscale: ${res.colours} colour${res.colours === 1 ? '' : 's'}, ${res.images} image${res.images === 1 ? '' : 's'}.${left}` : `Nothing to convert.${left}`, res.colours || res.images ? 'ok' : undefined);
+  }
+  /** Print production: lines thinner than a printer holds get a chosen width. */
+  async hairlinesDialog() {
+    const r = await formDialog('Fix hairlines', [
+      { type: 'info', label: 'Lines thinner than the limit (on the page, after any scaling) and lines without a width get the new width.' },
+      { k: 'narrower', label: 'Lines thinner than (pt)', type: 'number', value: 0.25, min: 0, max: 10, step: 0.01 }, { k: 'width', label: 'New width (pt)', type: 'number', value: 0.5, min: 0.01, max: 10, step: 0.01 }, this.range(),
+    ], { validate: (v) => this.validateRange(v) || (!(v.width > 0) ? 'Please enter a width above 0.' : null), ok: 'Fix' });
+    if (!r) return;
+    let res = null;
+    await this.mutate(async (b) => { res = await ops.fixHairlines(b, this.pagesOf(r), { narrowerThan: r.narrower, width: r.width }); return res; });
+    toast(res.lines ? `${res.lines} line${res.lines === 1 ? '' : 's'} on ${res.pages} page${res.pages === 1 ? '' : 's'} fixed` : 'There are no hairlines on these pages.', res.lines ? 'ok' : undefined);
+  }
+  /** Print production: trim and bleed marks, registration targets, colour bars and page information. */
+  async printerMarksDialog() {
+    const m = await this.markChoice('PrinterMarks', 'Printer marks');
+    if (!m) return;
+    const s = m.s; const v = (k, dflt) => s[k] ?? dflt;
+    const r = await formDialog('Printer marks', [
+      { k: 'trim', label: 'Trim marks', type: 'checkbox', value: v('trim', true) }, { k: 'bleed', label: 'Bleed marks', type: 'checkbox', value: v('bleed', true) },
+      { k: 'registration', label: 'Registration marks', type: 'checkbox', value: v('registration', true) }, { k: 'colorBars', label: 'Colour bars', type: 'checkbox', value: v('colorBars', true) },
+      { k: 'pageInfo', label: 'Page information', type: 'checkbox', value: v('pageInfo', true) },
+      { k: 'lineWeight', label: 'Line weight', type: 'select', options: [[0.125, '0.125 pt'], [0.25, '0.25 pt'], [0.5, '0.5 pt'], [1, '1 pt']], value: v('lineWeight', 0.25) },
+      { k: 'room', label: 'Enlarge the page to make room for the marks', type: 'checkbox', value: v('room', true) }, this.rangeFrom(m),
+    ], { validate: (x) => this.validateRange(x) || (!(x.trim || x.bleed || x.registration || x.colorBars || x.pageInfo) ? 'Please choose at least one kind of mark.' : null), ok: m.replace ? 'Update' : 'Add' });
+    if (!r) return;
+    const settings = { ...r }; delete settings.range;
+    await this.mutate((b) => ops.addPrinterMarks(b, this.pagesOf(r), { ...r, lineWeight: +r.lineWeight, makeRoom: r.room ? 36 : null, label: this.doc.name, date: new Date().toLocaleString('en-GB'), replace: m.replace, settings }));
   }
 
   // --- Pages ---------------------------------------------------------------------------------
@@ -624,6 +796,21 @@ export class Tools {
   async resetForm() { const c = await messageBox('Reset form', 'Clear all entered values?', ['Reset', 'Cancel'], { primary: 1 }); if (c === 0) await this.mutate((b) => ops.resetForm(b)); }
   async flattenForm() { const c = await messageBox('Flatten form', 'The fields are drawn permanently into the pages and can no longer be filled in afterwards.', ['Flatten', 'Cancel'], { primary: 1 }); if (c === 0) { await this.mutate((b) => ops.flattenForms(b)); if (this.group?.id === 'form') this.renderGroup(); } }
 
+  /** XFA forms: dynamic ones become normal pages and form fields; static ones keep their pages and lose the XFA part. */
+  async convertXfaDialog() {
+    const doc = this.doc;
+    const info = await ops.xfaInfo(doc.bytes);
+    if (!info) { toast('This document has no XFA form.'); return; }
+    const text = info.isStatic ? 'This is a static XFA form: its pages and fields are already in the document. The XFA part is removed, so every program shows and fills in the same form.' : 'This is a dynamic XFA form: other programs only show a placeholder page. Its layout is turned into normal pages with form fields, filled in with the data it contains. Scripts in the form are not taken over; check the result.';
+    if (await messageBox('Convert XFA form', text, ['Convert', 'Cancel'], { primary: 0, cancel: 1 }) !== 0) return;
+    let res = null;
+    const ok = await busy('Converting form', () => this.mutate(async (b) => { res = await ops.convertXfa(b, readFont); return res; }));
+    if (!ok) return;
+    doc.xfa = false; doc.fullSave = true;
+    this.app.renderBanner();
+    toast(res.kind === 'static' ? 'XFA part removed; the form fields stay.' : `Form converted: ${res.pages} page${res.pages === 1 ? '' : 's'}, ${res.fields} field${res.fields === 1 ? '' : 's'}`, 'ok');
+  }
+
   // --- Protection -----------------------------------------------------------------------------
   async encryptDialog() {
     const r = await formDialog('Password protection', [
@@ -650,7 +837,7 @@ export class Tools {
   async sanitize() {
     const r = await formDialog('Sanitize document', [
       { type: 'info', label: 'Removes hidden information from the document. Comments are also deleted if selected.' },
-      { k: 'metadata', label: 'Metadata', type: 'checkbox', value: true }, { k: 'attachments', label: 'Attachments', type: 'checkbox', value: true }, { k: 'comments', label: 'Comments', type: 'checkbox', value: true }, { k: 'javascript', label: 'JavaScript and actions', type: 'checkbox', value: true }, { k: 'links', label: 'Left', type: 'checkbox' }, { k: 'forms', label: 'Flatten form fields', type: 'checkbox' }, { k: 'thumbs', label: 'Thumbnails', type: 'checkbox', value: true },
+      { k: 'metadata', label: 'Metadata', type: 'checkbox', value: true }, { k: 'attachments', label: 'Attachments', type: 'checkbox', value: true }, { k: 'comments', label: 'Comments', type: 'checkbox', value: true }, { k: 'javascript', label: 'JavaScript and actions', type: 'checkbox', value: true }, { k: 'links', label: 'Links', type: 'checkbox' }, { k: 'forms', label: 'Flatten form fields', type: 'checkbox' }, { k: 'thumbs', label: 'Thumbnails', type: 'checkbox', value: true },
     ], { ok: 'Sanitize' });
     if (!r) return;
     if (await this.mutate((b) => ops.sanitizeDocument(b, r))) this.doc.fullSave = true;
@@ -805,6 +992,11 @@ export class Tools {
     }
     const ok = await doc.mutate((b) => ops.addInvisibleText(b, found, readFont), { skipCheck: !!o.skipCheck });
     if (!ok) return 0;
+    // Kept for "Review recognized text": the words with how sure the recognition was.
+    if (doc.ocrBytes !== undefined && doc.ocrBytes !== doc.undoStack[doc.undoStack.length - 1]?.bytes) doc.ocrWords = null;
+    doc.ocrWords = doc.ocrWords || new Map();
+    for (const x of found) doc.ocrWords.set(x.page, x);
+    doc.ocrBytes = doc.bytes;
     if (pre) doc.undoStack.splice(-pre, pre);
     this.app.editor.invalidate();
     this.app.renderBanner();
@@ -813,6 +1005,144 @@ export class Tools {
     const tilted = found.filter((x) => Math.abs(x.skew || 0) >= 1);
     if (tilted.length && !o.silent) toast(`${tilted.length === 1 ? 'Page' : 'Pages'} ${tilted.map((x) => doc.label(x.page)).join(', ')} ${tilted.length === 1 ? 'was' : 'were'} scanned at an angle. The text was read anyway and lies over the image. "Straighten page" under "Scan & OCR" rotates the image straight.`);
     return found.length;
+  }
+
+  /** Recognize text in several files: each file (PDF or image) is read and saved as a searchable PDF in a folder. */
+  async ocrFiles() {
+    const paths = await window.dp.openDialog({ title: 'Recognize text in several files', multi: true, filters: [{ name: 'PDF and images', extensions: ['pdf', 'png', 'jpg', 'jpeg', 'tif', 'tiff', 'bmp', 'gif', 'webp'] }] });
+    if (!paths.length) return;
+    const r = await formDialog('Recognize text in several files', [{ type: 'info', label: `${paths.length} file${paths.length === 1 ? '' : 's'}. Each one is saved as a searchable PDF ("_OCR") in the folder you choose next.` }, { k: 'lang', label: 'Language', type: 'select', options: scan.OCR_LANGS, value: this.app.settings.ocrLang || 'deu+eng' }], { ok: 'Next' });
+    if (!r) return;
+    const dir = await window.dp.folderDialog('Choose the folder for the searchable PDFs');
+    if (!dir) return;
+    const done = []; const failed = [];
+    for (const p of paths) {
+      const name = p.split(/[\\/]/).pop();
+      const open = this.app.docs.find((x) => x.path && x.path.toLowerCase() === p.toLowerCase());
+      try {
+        const d = open || (/\.pdf$/i.test(p) ? await this.app.openPath(p) : await this.app.openBytes(await conv.fileToPdf(p), `${fileBase(name)}.pdf`, { unsaved: true }));
+        if (!d) throw new Error('The file could not be opened.');
+        this.app.activate(d);
+        await d.scanCheck?.catch(() => {});
+        await this.recognizeText([...Array(d.numPages).keys()], { lang: r.lang, quiet: true, silent: true, skipCheck: true });
+        let out = inFolder(dir, `${fileBase(name)}_OCR.pdf`);
+        for (let n = 2; await window.dp.fileStat(out); n++) out = inFolder(dir, `${fileBase(name)}_OCR (${n}).pdf`);
+        await window.dp.writeFile(out, await d.buildOutput({ noEncrypt: true }));
+        done.push(out);
+        if (!open) await this.app.closeDoc(d, true);
+      } catch (e) { failed.push(`${name}: ${e.message}`); }
+    }
+    if (failed.length) await messageBox('Recognize text in several files', `${done.length} file${done.length === 1 ? '' : 's'} saved. ${failed.length} could not be read:\n${failed.slice(0, 8).join('\n')}`);
+    else toast(`${done.length} searchable PDF${done.length === 1 ? '' : 's'} saved`, 'ok');
+    if (done.length) window.dp.openPath(dir);
+  }
+  /** Review recognized text: the words the recognition was least sure of, each with its picture, to correct. */
+  async ocrReview() {
+    const doc = this.doc;
+    if (!doc.ocrWords?.size) { toast('Recognize the text first: the review shows the words recognized since the document was opened.'); return; }
+    if (doc.ocrBytes !== doc.bytes) { toast('The document changed after the text was recognized. Recognize it again (with "Recognize again") to review it.'); return; }
+    const r = await formDialog('Review recognized text', [{ k: 'limit', label: 'Show words recognized with less than', type: 'select', options: [[70, '70 % certainty (uncertain words)'], [90, '90 % certainty'], [101, 'All words']], value: 70 }], { ok: 'Show' });
+    if (!r) return;
+    const list = [];
+    for (const [page, entry] of [...doc.ocrWords.entries()].sort((a, b) => a[0] - b[0])) entry.words.forEach((w, k) => { if (w.conf !== undefined && w.conf < +r.limit && /\S/.test(w.text)) list.push({ page, k, w }); });
+    if (!list.length) { toast('All recognized words are above this certainty.', 'ok'); return; }
+    const shown = list.slice(0, 200);
+    const canvases = new Map();
+    const rows = [];
+    for (const it of shown) {
+      if (!canvases.has(it.page)) canvases.set(it.page, await this.viewer.renderToCanvas(it.page, 150));
+      const { canvas, viewport } = canvases.get(it.page);
+      const w = it.w; const hgt = w.height;
+      const a = viewport.convertToViewportPoint(w.x - 2, w.y - hgt * 0.3); const b = viewport.convertToViewportPoint(w.x + w.width + 2, w.y + hgt * 0.9);
+      const x = Math.min(a[0], b[0]); const y = Math.min(a[1], b[1]); const cw = Math.max(1, Math.abs(b[0] - a[0])); const ch = Math.max(1, Math.abs(b[1] - a[1]));
+      const pic = h('canvas', { class: 'ocr-word', width: Math.round(cw), height: Math.round(ch) });
+      pic.getContext('2d').drawImage(canvas, x, y, cw, ch, 0, 0, pic.width, pic.height);
+      const input = h('input', { type: 'text', value: w.text, spellcheck: 'true', data: { ocrPage: String(it.page), ocrIndex: String(it.k) } });
+      const band = w.conf >= 90 ? 'ok' : w.conf >= 70 ? 'warn' : 'bad';
+      rows.push(h('div', { class: 'ocr-row' }, pic, input, h('span', { class: `badge ${band}`, title: 'Certainty of the recognition' }, `${Math.round(w.conf)} %`), h('small', {}, `Page ${doc.label(it.page)}`)));
+    }
+    for (const c of canvases.values()) c.canvas.width = 0;
+    const box = h('div', { class: 'ocr-review' }, rows);
+    const note = list.length > shown.length ? ` The first ${shown.length} of ${list.length} words are shown.` : '';
+    if (await messageBox('Review recognized text', h('div', {}, h('p', {}, `Compare each word with its picture and correct it where it was read wrongly. Red: less than 70 % certain, yellow: 70 to 89 %.${note}`), box), ['Apply', 'Cancel'], { primary: 0, wide: true, cancel: 1 }) !== 0) return;
+    const changed = new Set();
+    for (const inp of box.querySelectorAll('input')) {
+      const entry = doc.ocrWords.get(+inp.dataset.ocrPage); const w = entry.words[+inp.dataset.ocrIndex];
+      const v = inp.value.trim();
+      if (v && v !== w.text) { w.text = v; w.conf = 100; changed.add(+inp.dataset.ocrPage); }
+    }
+    if (!changed.size) { toast('Nothing was changed.'); return; }
+    const pages = [...changed];
+    const ok = await doc.mutate(async (b) => {
+      const removed = await removeRecognizedText(b, pages);
+      return ops.addInvisibleText(removed.bytes, pages.map((p) => doc.ocrWords.get(p)), readFont);
+    });
+    if (ok) { doc.ocrBytes = doc.bytes; this.app.editor.invalidate(); toast(`Recognized text corrected on ${pages.length} page${pages.length === 1 ? '' : 's'}`, 'ok'); }
+  }
+  /** Enhance scanned pages: even lighting and white paper, or black and white, and fewer specks. */
+  async enhanceScanDialog() {
+    const r = await formDialog('Enhance scanned pages', [
+      { k: 'mode', label: 'Result', type: 'select', options: [['clean', 'Clean up (paper white, stronger contrast, colours stay)'], ['bw', 'Black and white']], value: 'clean' },
+      { k: 'denoise', label: 'Remove specks and noise', type: 'checkbox', value: true },
+      { type: 'info', label: 'The scan images are cleaned where they are: recognized text, comments and form fields stay.' }, this.range(),
+    ], { validate: this.validateRange, ok: 'Enhance' });
+    if (!r) return;
+    let res = null;
+    await busy('Enhancing scans', () => this.mutate(async (b) => { res = await ops.enhanceScans(b, this.pagesOf(r), { mode: r.mode, denoise: r.denoise, codec: imageCodec }); return res; }));
+    const extra = [res.notScans.length ? `${res.notScans.length} page${res.notScans.length === 1 ? ' is' : 's are'} not a scan` : '', res.left ? `${res.left} image${res.left === 1 ? '' : 's'} could not be changed` : ''].filter(Boolean).join(', ');
+    toast(res.images ? `${res.pages} page${res.pages === 1 ? '' : 's'} enhanced${extra ? ` (${extra})` : ''}` : `Nothing was enhanced${extra ? `: ${extra}` : '.'}`, res.images ? 'ok' : undefined);
+  }
+  /**
+   * Straighten a photographed page (perspective): the sheet's corners are found (or placed by hand on the preview)
+   * and the area inside them becomes the page, upright and rectangular.
+   */
+  async perspectiveDialog(preset) {
+    const doc = this.doc; const i = this.viewer.current;
+    const v = doc.pages[i].view;
+    const dpi = Math.max(72, Math.min(200, (2000 * 72) / Math.max(v[2] - v[0], v[3] - v[1])));
+    const { canvas } = await this.viewer.renderToCanvas(i, dpi);
+    const ctx2 = canvas.getContext('2d', { willReadFrequently: true });
+    const img = { width: canvas.width, height: canvas.height, data: ctx2.getImageData(0, 0, canvas.width, canvas.height).data };
+    const found = scanfix.detectDocument(img);
+    const W = canvas.width; const H = canvas.height;
+    let q = preset || found || [[W * 0.05, H * 0.05], [W * 0.95, H * 0.05], [W * 0.95, H * 0.95], [W * 0.05, H * 0.95]];
+    const k = Math.min(1, 560 / W, 440 / H);
+    const view = h('canvas', { width: Math.round(W * k), height: Math.round(H * k) });
+    view.getContext('2d').drawImage(canvas, 0, 0, view.width, view.height);
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('class', 'pq-svg'); svg.setAttribute('width', view.width); svg.setAttribute('height', view.height);
+    const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+    svg.append(poly);
+    const handles = q.map((_, n) => h('div', { class: 'pq-handle', data: { corner: String(n) }, title: ['Top left', 'Top right', 'Bottom right', 'Bottom left'][n] }));
+    const draw = () => {
+      poly.setAttribute('points', q.map(([x, y]) => `${x * k},${y * k}`).join(' '));
+      handles.forEach((el, n) => { el.style.left = `${q[n][0] * k}px`; el.style.top = `${q[n][1] * k}px`; });
+    };
+    handles.forEach((el, n) => el.addEventListener('pointerdown', (e) => {
+      e.preventDefault(); el.setPointerCapture(e.pointerId);
+      const r0 = view.getBoundingClientRect();
+      const move = (m) => { q = q.slice(); q[n] = [Math.max(0, Math.min(W, (m.clientX - r0.left) / k)), Math.max(0, Math.min(H, (m.clientY - r0.top) / k))]; draw(); };
+      const up = () => { el.removeEventListener('pointermove', move); el.removeEventListener('pointerup', up); };
+      el.addEventListener('pointermove', move); el.addEventListener('pointerup', up);
+    }));
+    const stage = h('div', { class: 'pq-stage', style: { width: `${view.width}px`, height: `${view.height}px` } }, view, svg, handles);
+    draw();
+    const msg = found ? 'The corners of the sheet were found. Drag a corner to correct it.' : 'The sheet could not be found automatically. Drag the four corners onto the corners of the sheet.';
+    if (await messageBox('Straighten photo (perspective)', h('div', {}, h('p', {}, msg), stage), ['Straighten', 'Cancel'], { primary: 0, wide: true, cancel: 1 }) !== 0) { canvas.width = 0; return false; }
+    let out;
+    try { out = scanfix.warp(img, q); } catch (e) { canvas.width = 0; throw e; }
+    canvas.width = 0;
+    const c = document.createElement('canvas'); c.width = out.width; c.height = out.height;
+    c.getContext('2d').putImageData(new ImageData(out.data, out.width, out.height), 0, 0);
+    const jpeg = await canvasBytes(c, 'image/jpeg', 0.9);
+    c.width = 0;
+    const hadText = (await doc.pageText(i)).items.some((x) => x.str?.trim());
+    await this.mutate((b) => ops.setPagePicture(b, i, jpeg, (out.width / dpi) * 72, (out.height / dpi) * 72), { pages: [i] });
+    this.app.editor.invalidate();
+    // The recognized text went with the old picture: read the straightened page again.
+    if (hadText) await this.recognizeText([i], { quiet: true });
+    toast('Page straightened', 'ok');
+    return true;
   }
 
   // --- Straighten skewed scans -------------------------------------------------------------
@@ -909,7 +1239,7 @@ export class Tools {
       toast('Images saved', 'ok'); window.dp.openPath(dir);
       return;
     }
-    const meta = { docx: ['Microsoft Word', conv.toDocx], xlsx: ['Microsoft Excel', conv.toXlsx], pptx: ['Microsoft PowerPoint', conv.toPptx], html: ['HTML', conv.toHtml], rtf: ['Rich Text', conv.toRtf], txt: ['Text', conv.toText] }[fmt];
+    const meta = { docx: ['Microsoft Word', conv.toDocx], xlsx: ['Microsoft Excel', conv.toXlsx], pptx: ['Microsoft PowerPoint', conv.toPptx], html: ['HTML', conv.toHtml], rtf: ['Rich Text', conv.toRtf], txt: ['Text', conv.toText], md: ['Markdown', conv.toMarkdown] }[fmt];
     let mode;
     if (fmt === 'pptx') { const r = await formDialog('Export as PowerPoint', [{ k: 'mode', label: 'Content', type: 'select', options: [['exact', 'Page as image (exact)'], ['edit', 'Text and images (editable)']], value: 'exact' }], { ok: 'Next' }); if (!r) return; mode = r.mode; }
     const p = await window.dp.saveDialog({ title: `Export as ${meta[0]}`, defaultPath: doc.path ? doc.path.replace(/\.pdf$/i, `.${fmt}`) : `${base}.${fmt}`, filters: [{ name: meta[0], extensions: [fmt] }] });
@@ -918,6 +1248,31 @@ export class Tools {
     await window.dp.writeFile(p, data);
     toast('Export complete', 'ok');
     window.dp.reveal(p);
+  }
+  /** Export all images: every image the pages use, once, as JPEG (unchanged), PNG (with transparency) or JPEG 2000. */
+  async exportImages() {
+    const doc = this.doc;
+    if (!doc) { toast('Please open a document first.'); return; }
+    const r = await formDialog('Export all images', [{ type: 'info', label: 'Every image is saved once, in its original quality: JPEG images unchanged, other images as PNG with their transparency.' }, { k: 'minSide', label: 'Skip images smaller than (pixels)', type: 'number', value: 8, min: 1, max: 10000 }, this.range()], { validate: this.validateRange, ok: 'Next' });
+    if (!r) return;
+    const dir = await window.dp.folderDialog('Choose destination folder');
+    if (!dir) return;
+    const base = fileBase(doc.name);
+    const res = await busy('Exporting images', async (p) => {
+      const d = await loadForEdit(await doc.buildOutput({ noEncrypt: true }));
+      const out = await images.exportImages(d, this.pagesOf(r), { minSide: r.minSide || 1, codec: imageCodec, progress: (k, n) => p(k / n, `Image ${k} of ${n}`) });
+      const count = {};
+      for (const im of out.images) {
+        count[im.page] = (count[im.page] || 0) + 1;
+        await window.dp.writeFile(inFolder(dir, `${base}_P${String(im.page + 1).padStart(3, '0')}_${count[im.page]}.${im.ext}`), im.data);
+      }
+      return out;
+    });
+    if (!res.images.length && !res.skipped.length) { toast('These pages contain no images.'); return; }
+    const msg = `${res.images.length} image${res.images.length === 1 ? '' : 's'} saved`;
+    if (res.skipped.length) await messageBox('Export all images', `${msg}. ${res.skipped.length} could not be exported:\n${[...new Set(res.skipped.map((x) => `Page ${x.page + 1}: ${x.reason}`))].slice(0, 8).join('\n')}`);
+    else toast(msg, 'ok');
+    if (res.images.length) window.dp.openPath(dir);
   }
   /** Save as PDF/A: the document is checked against PDF/A-2b or -3b, converted where possible, and what remains is listed. */
   async pdfa() {
@@ -959,6 +1314,30 @@ export class Tools {
       const bytes = await busy('Creating PDF', () => conv.fileToPdf(p));
       await this.app.openBytes(bytes, `${fileBase(p.split(/[\\/]/).pop())}.pdf`, { unsaved: true, fromImage: /\.(png|jpe?g|gif|bmp|webp|tiff?)$/i.test(p) });
     }
+  }
+  /** Several files (images, Office, text, PDF) become one PDF each, saved in a folder. */
+  async createSeparate() {
+    const paths = await window.dp.openDialog({ title: 'Create separate PDFs from files', multi: true, filters: conv.CREATE_FILTERS });
+    if (!paths.length) return;
+    const dir = await window.dp.folderDialog('Choose the folder for the PDFs');
+    if (!dir) return;
+    const done = []; const failed = [];
+    await busy('Creating PDFs', async (progress) => {
+      for (let k = 0; k < paths.length; k++) {
+        const p = paths[k]; const name = p.split(/[\\/]/).pop();
+        progress(k / paths.length, name);
+        try {
+          const bytes = await conv.fileToPdf(p);
+          let out = inFolder(dir, `${fileBase(name)}.pdf`);
+          for (let n = 2; (await window.dp.fileStat(out)) || done.includes(out); n++) out = inFolder(dir, `${fileBase(name)} (${n}).pdf`);
+          await window.dp.writeFile(out, bytes);
+          done.push(out);
+        } catch (e) { failed.push(`${name}: ${e.message}`); }
+      }
+    });
+    if (failed.length) await messageBox('Create separate PDFs', `${done.length} PDF${done.length === 1 ? '' : 's'} created. ${failed.length} file${failed.length === 1 ? '' : 's'} could not be converted:\n${failed.slice(0, 8).join('\n')}`);
+    else toast(`${done.length} PDF${done.length === 1 ? '' : 's'} created`, 'ok');
+    if (done.length) window.dp.openPath(dir);
   }
   async createFromScanner() {
     const data = await window.dp.scan();
@@ -1092,7 +1471,46 @@ export class Tools {
     await messageBox('PDF compressed', `${lines.join('\n')}\n\nPlease save to keep the result.`);
   }
 
+  /** Runs action steps on files without the wizard (tests). */
+  runAction(steps, files, dir) { return runAction(this.app, steps, files, dir); }
+
   // --- Measure -----------------------------------------------------------------------------
+  /** Snapping for the measure tools: the page's geometry is read once per page and document state. */
+  snapGeom(i) {
+    const d = this.doc;
+    if (!d) return null;
+    if (!this.snapCache || this.snapCache.bytes !== d.bytes) this.snapCache = { bytes: d.bytes, pages: new Map(), doc: null, loading: null };
+    const c = this.snapCache;
+    if (c.pages.has(i)) return c.pages.get(i);
+    if (!c.doc) { if (!c.loading) c.loading = loadForEdit(d.bytes).then((x) => { c.doc = x; }).catch(() => {}); return null; }
+    let g = null;
+    try { g = snap.pageGeometry(c.doc.getPage(i)); } catch { g = null; }
+    c.pages.set(i, g);
+    return g;
+  }
+  snapFor(i, p, tol) { return this.app.settings.measureSnap === false ? null : snap.snapPoint(this.snapGeom(i), p, tol); }
+  async toggleSnap() {
+    this.app.settings.measureSnap = this.app.settings.measureSnap === false;
+    await this.app.saveSettings();
+    toast(this.app.settings.measureSnap ? 'Measure tools snap to lines and points' : 'Snapping turned off', 'ok');
+  }
+  /** The measurements of the document (distance, perimeter, area) as a CSV file for a spreadsheet. */
+  async exportMeasurements() {
+    const kinds = { Distance: 'distance', Perimeter: 'perimeter', Area: 'area' };
+    const per = {}; const rows = [];
+    for (const a of this.doc.allAnnots()) {
+      if (!kinds[a.subject]) continue;
+      const v = snap.parseMeasurement(a.contents);
+      if (!v) continue;
+      per[a.page] = per[a.page] || 0;
+      rows.push({ page: a.page, index: per[a.page]++, type: kinds[a.subject], ...v, label: a.contents || '', author: a.author || '' });
+    }
+    if (!rows.length) { toast('This document has no measurements.'); return; }
+    const p = await window.dp.saveDialog({ title: 'Export measurements', defaultPath: this.doc.suggestedPath('_Measurements').replace(/.pdf$/i, '.csv'), filters: [{ name: 'CSV', extensions: ['csv'] }] });
+    if (!p) return;
+    await window.dp.writeFile(p, new TextEncoder().encode(`﻿${snap.measurementsCsv(rows)}`));
+    toast(`${rows.length} measurement${rows.length === 1 ? '' : 's'} exported`, 'ok');
+  }
   async scaleDialog() {
     const r = await formDialog('Set scale', [{ type: 'info', label: 'Example: 1 mm on the page equals 100 mm in reality.' }, { k: 'ratio', label: 'Factor', type: 'number', value: this.measure.ratio, min: 0.0001, step: 'any' }, { k: 'unit', label: 'Unit', type: 'select', options: ['mm', 'cm', 'm', 'in', 'pt'], value: this.measure.unit }]);
     if (r) { this.measure = r; toast('Scale set', 'ok'); }
@@ -1170,23 +1588,77 @@ export class Tools {
     const label = { ok: 'Passed', bad: 'Failed', warn: 'Note' };
     return messageBox(title, h('table', { class: 'tbl' }, rows.map(([s, a, b]) => h('tr', {}, h('td', {}, h('span', { class: `badge ${s}` }, label[s])), h('td', {}, a), h('td', {}, b || '')))), ['Close'], { wide: true });
   }
+  /** Accessibility check: the rules of the common checkers, with a fix where DocPilot has one. */
   async accessCheck() {
-    const i = await ops.analyze(this.doc.bytes);
-    let hasText = false;
-    for (let p = 0; p < Math.min(this.doc.numPages, 30); p++) if ((await this.doc.pageText(p)).items.some((x) => x.str?.trim())) { hasText = true; break; }
-    await this.report('Accessibility: quick check', [
-      [i.tagged ? 'ok' : 'bad', 'Tags', i.tagged ? 'Document is tagged' : 'Document contains no tags'],
-      [hasText ? 'ok' : 'bad', 'Text', hasText ? 'Searchable text present' : 'No text found, please run OCR'],
-      [i.title ? 'ok' : 'bad', 'Title', i.title || 'No document title'],
-      [i.lang ? 'ok' : 'bad', 'Language', i.lang ? 'Language set' : 'No document language'],
-      [i.outlines || this.doc.numPages < 10 ? 'ok' : 'warn', 'Bookmarks', i.outlines ? 'Present' : 'No bookmarks'],
-      [this.doc.security ? 'warn' : 'ok', 'Security', this.doc.security ? 'Protection may restrict screen readers' : 'No restriction'],
-    ]);
+    const d = this.doc;
+    const pageText = [];
+    for (let p = 0; p < d.numPages; p++) pageText.push(p < 300 ? (await d.pageText(p)).items.some((x) => x.str?.trim()) : true);
+    const rows = await ops.accessibilityReport(d.bytes, { permissions: d.permissions || null, pageText, hasJS: !!d.hasJS });
+    const fixes = {
+      'tagged-pdf': ['Tag', () => this.autoTagDialog()], 'tagged-content': ['Tag', () => this.autoTagDialog()], 'image-only': ['Recognize text', () => this.ocr()],
+      language: ['Set', () => this.titleLang()], title: ['Set', () => this.titleLang()], 'tab-order': ['Fix', () => this.mutate((b) => ops.fixAccessibility(b))],
+      'tagged-fields': ['Tag', () => this.tagFieldsDialog()], 'tagged-annotations': ['Tag', () => this.tagFieldsDialog()], 'figures-alt': ['Add', () => this.altTextDialog()],
+      'heading-nesting': ['Tags', () => this.app.panels.show('tags')], 'reading-order': ['Tags', () => this.app.panels.show('tags')],
+    };
+    const label = { passed: 'Passed', failed: 'Failed', manual: 'Check manually', skipped: 'Not applicable' };
+    const cls = { passed: 'ok', failed: 'bad', manual: 'warn', skipped: '' };
+    const count = (st) => rows.filter((x) => x.status === st).length;
+    const table = h('table', { class: 'tbl access-report' }, rows.map((x) => h('tr', { data: { rule: x.id, status: x.status } },
+      h('td', {}, h('span', { class: `badge ${cls[x.status]}` }, label[x.status])), h('td', {}, h('b', {}, x.name), h('br'), h('small', {}, x.status === 'failed' ? x.fix : x.description)), h('td', {}, x.detail || ''),
+      h('td', {}, x.status !== 'passed' && x.status !== 'skipped' && fixes[x.id] ? h('button', { class: 'btn', type: 'button', onclick: (e) => { e.target.closest('.dlg').querySelector('.f .btn').click(); setTimeout(() => this.guard(fixes[x.id][1])(), 0); } }, fixes[x.id][0]) : ''))));
+    await messageBox('Accessibility check', h('div', {}, h('p', {}, `${count('passed')} passed, ${count('failed')} failed, ${count('manual')} to check manually.`), table), ['Close'], { wide: true });
+  }
+  /** Gives an untagged document tags: headings, paragraphs, figures, form fields and links. */
+  async autoTagDialog() {
+    const r = await formDialog('Automatically tag document', [{ type: 'info', label: 'Text becomes paragraphs and headings (from the size and weight of the text), images become figures, lines and decoration are marked as decoration. Form fields and links get tags too. The reading order follows the page content; check it in the Tags panel. Afterwards, add alternate text to the images.' }], { ok: 'Tag' });
+    if (!r) return;
+    let res = null;
+    await this.mutate(async (b) => { res = await ops.autoTag(b); return res; });
+    toast(`Tagged: ${res.headings} heading${res.headings === 1 ? '' : 's'}, ${res.paragraphs} paragraph${res.paragraphs === 1 ? '' : 's'}, ${res.figures} figure${res.figures === 1 ? '' : 's'}, ${res.fields} form field${res.fields === 1 ? '' : 's'}`, 'ok');
+    this.app.panels.show('tags');
+  }
+  async tagFieldsDialog() {
+    let res = null;
+    await this.mutate(async (b) => { res = await ops.tagFormFields(b); return res; });
+    toast(res.fields || res.links ? `Tagged: ${res.fields} form field${res.fields === 1 ? '' : 's'}, ${res.links} link${res.links === 1 ? '' : 's'}` : 'All form fields and links are already tagged.', 'ok');
+  }
+  /** Alternate text for every figure: a picture of it and a text field. */
+  async altTextDialog() {
+    let figures = (await ops.readTags(this.doc.bytes)).length ? [] : null;
+    if (figures === null) {
+      if (await messageBox('Alternate text for images', 'Alternate text is stored in the tags of the document, and this document has none yet. Tag it now?', ['Tag', 'Cancel'], { primary: 0 }) !== 0) return;
+      await this.mutate((b) => ops.autoTag(b));
+    }
+    const { findTags } = await import('./pdf/a11y.js');
+    figures = findTags(await ops.readTags(this.doc.bytes), (n) => n.role === 'Figure' && n.ref);
+    if (!figures.length) { toast('This document has no figures.'); return; }
+    const rows = [];
+    for (const [k, fg] of figures.entries()) {
+      let pic = null;
+      if (fg.page !== null && fg.bbox && k < 60) {
+        try {
+          const { canvas, viewport } = await this.viewer.renderToCanvas(fg.page, 60);
+          const a = viewport.convertToViewportPoint(fg.bbox[0], fg.bbox[1]); const b = viewport.convertToViewportPoint(fg.bbox[2], fg.bbox[3]);
+          const x = Math.min(a[0], b[0]); const y = Math.min(a[1], b[1]); const w = Math.max(1, Math.abs(a[0] - b[0])); const ht = Math.max(1, Math.abs(a[1] - b[1]));
+          const s = Math.min(1, 120 / Math.max(w, ht));
+          pic = h('canvas', { width: Math.round(w * s), height: Math.round(ht * s), class: 'alt-pic' });
+          pic.getContext('2d').drawImage(canvas, x, y, w, ht, 0, 0, pic.width, pic.height);
+        } catch { pic = null; }
+      }
+      const input = h('textarea', { rows: 2, placeholder: 'Describe the image', data: { altRef: fg.ref } }); input.value = fg.alt || '';
+      rows.push(h('div', { class: 'alt-row' }, pic || h('div', { class: 'alt-pic empty' }, 'Figure'), h('div', {}, h('small', {}, `Page ${(fg.page ?? 0) + 1}`), input)));
+    }
+    const box = h('div', { class: 'alt-list' }, rows);
+    if (await messageBox('Alternate text for images', h('div', {}, h('p', {}, 'Describe what each image shows for people who cannot see it. Leave decorative images empty.'), box), ['Save', 'Cancel'], { primary: 0, wide: true, cancel: 1 }) !== 0) return;
+    const map = Object.fromEntries([...box.querySelectorAll('textarea')].map((t) => [t.dataset.altRef, t.value]));
+    await this.mutate((b) => ops.setAltTexts(b, map));
+    toast('Alternate text saved', 'ok');
   }
   async titleLang() {
     const m = (await this.doc.pdf.getMetadata()).info;
     const r = await formDialog('Title and language', [{ k: 'title', label: 'Title', value: m.Title || fileBase(this.doc.name), required: true }, { k: 'lang', label: 'Language', type: 'select', options: [['en-GB', 'English (UK)'], ['en-US', 'English (US)'], ['de-CH', 'German (Switzerland)'], ['de-DE', 'German'], ['fr-CH', 'French'], ['it-CH', 'Italian']], value: 'en-GB' }]);
-    if (r) await this.mutate(async (b) => ops.setLanguage(await ops.setMetadata(b, { title: r.title }), r.lang));
+    // The window shows the title instead of the file name (accessibility); pages with annotations follow the tags.
+    if (r) await this.mutate(async (b) => ops.fixAccessibility(await ops.setLanguage(await ops.setMetadata(b, { title: r.title }), r.lang)));
   }
   async preflight() {
     const i = await ops.analyze(this.doc.bytes);
@@ -1213,7 +1685,7 @@ export class Tools {
   async javascript() {
     const list = await ops.listDocumentJavascript(this.doc.bytes);
     const r = await formDialog('Document JavaScript', [
-      { type: 'info', label: `${list.length ? `Existing scripts: ${list.map((s) => s.name).join(', ')}. They stay in the document.` : 'No scripts.'} ${this.app.policy?.allowJavaScript ? 'Scripts only run when JavaScript is turned on in Preferences, and then in isolation without access to files or the internet.' : 'Scripts are not run in DocPilot (blocked by IT).'}` },
+      { type: 'info', label: `${list.length ? `Existing scripts: ${list.map((s) => s.name).join(', ')}. They stay in the document.` : 'No scripts.'} ${this.app.policy?.allowJavaScript ? 'Scripts only run when JavaScript is turned on in Preferences, and then in isolation without access to files or the internet.' : 'Scripts are not run in DocPilot, for security reasons.'}` },
       { k: 'name', label: 'Script name', value: list[0]?.name || 'Script1', required: true }, { k: 'code', label: 'Code (empty = delete)', type: 'textarea', value: list[0]?.code || '' },
     ], { wide: true, ok: 'Save' });
     if (r) await this.mutate((b) => ops.setDocumentJavascript(b, r.name, r.code));

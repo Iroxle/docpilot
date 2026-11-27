@@ -1494,7 +1494,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 License: MIT
 
 ```
-Parts of DocPilot's PDF code (combining and extracting pages, redaction, file size optimization, form formats, calculations and data exchange, incremental saving and signature checks, PDF/A checks) are ported from PdfCraft, which is available under the MIT License or the Apache License 2.0; DocPilot uses it under the MIT License.
+Parts of DocPilot's PDF code (combining and extracting pages, redaction, file size optimization, form formats, calculations and data exchange, incremental saving and signature checks, PDF/A checks, page marks, page boxes, image and Markdown export, print layouts, grayscale, hairlines and printer marks, measuring, document fonts, accessibility tagging and checks, scan clean-up and perspective, the action wizard, XFA forms) are ported from PdfCraft, which is available under the MIT License or the Apache License 2.0; DocPilot uses it under the MIT License.
 
 MIT License
 

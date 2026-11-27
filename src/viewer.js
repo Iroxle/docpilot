@@ -1,4 +1,4 @@
-// Seitendarstellung: Virtualisierung, Zoom, Layouts, Textebene, Formularebene, Suchmarkierung.
+// Page display: virtualization, zoom, layouts, text layer, form layer, search highlighting.
 import { pdfjs } from './document.js';
 import { h, debounce } from './util.js';
 
@@ -86,7 +86,8 @@ export class Viewer {
   }
 
   applyZoom(keep) {
-    if (!this.doc) return;
+    // While a changed document is being loaded its page list is incomplete; reload() fits the pages afterwards.
+    if (!this.doc || this.doc.swapping) return;
     const prev = this.scale;
     this.scale = Math.round(this.computeScale() * 1000) / 1000;
     if (keep && Math.abs(prev - this.scale) < 0.001) return;
@@ -96,6 +97,7 @@ export class Viewer {
   }
 
   layoutPages() {
+    if (!this.doc || this.doc.swapping) return;
     for (const n of this.nodes) {
       const { w, h: ht } = this.baseSize(n.i);
       n.el.style.width = `${Math.round(w * this.scale)}px`;
@@ -136,7 +138,9 @@ export class Viewer {
   }
 
   renderVisible() {
+    // While a changed document is being loaded its page list is incomplete: try again a moment later.
     if (!this.doc) return;
+    if (this.doc.swapping) { this.scheduleRender(); return; }
     const vis = this.visiblePages();
     const keep = new Set(vis.map((n) => n.i));
     for (const n of this.nodes) {
@@ -155,6 +159,7 @@ export class Viewer {
   }
 
   async renderPage(n) {
+    if (!this.doc?.pages[n.i] || this.doc.swapping) { n.stale = true; if (this.doc?.swapping) this.scheduleRender(); return; }
     const seq = ++n.ver;
     n.stale = false;
     if (n.task) { n.task.cancel(); n.task = null; }
@@ -166,11 +171,16 @@ export class Viewer {
     if (pixels > MAX_PIXELS) dpr *= Math.sqrt(MAX_PIXELS / pixels);
     const canvas = h('canvas', { class: 'main' });
     canvas.width = Math.floor(vpCss.width * dpr); canvas.height = Math.floor(vpCss.height * dpr);
+    // Check boxes and radio buttons are drawn into small canvases of their own, one for "checked" and one for
+    // "unchecked"; the form layer shows the one that matches the field. Without this map PDF.js 6 draws both looks onto
+    // the page, one over the other, and the check mark is hidden.
+    const canvasMap = new Map();
     const task = proxy.render({
       canvas, canvasContext: canvas.getContext('2d', { alpha: false }),
       viewport: vpCss, transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined,
       annotationMode: AnnotationMode.ENABLE_FORMS,
       annotationStorage: doc.pdf.annotationStorage,
+      annotationCanvasMap: canvasMap,
       optionalContentConfigPromise: Promise.resolve(doc.ocConfig),
     });
     n.task = task;
@@ -213,7 +223,7 @@ export class Viewer {
       const js = this.app.scripting?.active(doc);
       const fieldObjects = js ? await doc.fieldObjects() : null;
       if (seq !== n.ver) return;
-      const layer = new AnnotationLayer({ div: annotDiv, page: proxy, viewport: vpCss.clone({ dontFlip: true }), accessibilityManager: null, annotationCanvasMap: null, annotationEditorUIManager: null, structTreeLayer: null, commentManager: null, linkService: this.linkService(), annotationStorage: doc.pdf.annotationStorage });
+      const layer = new AnnotationLayer({ div: annotDiv, page: proxy, viewport: vpCss.clone({ dontFlip: true }), accessibilityManager: null, annotationCanvasMap: canvasMap, annotationEditorUIManager: null, structTreeLayer: null, commentManager: null, linkService: this.linkService(), annotationStorage: doc.pdf.annotationStorage });
       await layer.render({ annotations, div: annotDiv, page: proxy, viewport: vpCss.clone({ dontFlip: true }), linkService: this.linkService(), annotationStorage: doc.pdf.annotationStorage, renderForms: true, enableScripting: !!js, hasJSActions: !!js, fieldObjects, imageResourcesPath: '', downloadManager: null });
       if (js) this.app.scripting.pageRendered(n.i);
       else await this.app.formCalc?.decorate(annotDiv, doc);
@@ -346,6 +356,8 @@ export class Viewer {
       return;
     }
     if (info.annotOnly) { for (const n of this.nodes) if (n.layers) this.app.overlay.renderPage(n.i); return; }
+    // A fitting zoom (width, page) may have missed a change of the window while the document was loading.
+    if (typeof this.zoom === 'string') this.applyZoom(true);
     this.layoutPages();
     this.invalidate(info.pages);
   }
@@ -356,7 +368,7 @@ export class Viewer {
   }
   layersOf(i) { return this.nodes[i]?.layers; }
   node(i) { return this.nodes[i]; }
-  /** Wandelt Bildschirm-Koordinaten in Seitenkoordinaten um. */
+  /** Converts screen coordinates into page coordinates. */
   toPdf(i, clientX, clientY) {
     const r = this.nodes[i].el.getBoundingClientRect();
     return this.viewport(i).convertToPdfPoint(clientX - r.left, clientY - r.top);
@@ -389,7 +401,8 @@ export class Viewer {
     const c = document.createElement('canvas');
     c.width = Math.ceil(viewport.width); c.height = Math.ceil(viewport.height);
     c.style.width = `${width}px`;
-    await proxy.render({ canvas: c, canvasContext: c.getContext('2d', { alpha: false }), viewport, annotationMode: AnnotationMode.ENABLE_FORMS, annotationStorage: this.doc.pdf.annotationStorage }).promise;
+    // No form layer lies on a thumbnail: the fields are drawn into the picture with their current values.
+    await proxy.render({ canvas: c, canvasContext: c.getContext('2d', { alpha: false }), viewport, annotationMode: AnnotationMode.ENABLE_STORAGE, annotationStorage: this.doc.pdf.annotationStorage }).promise;
     return c;
   }
 }

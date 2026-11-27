@@ -97,12 +97,16 @@ export class Doc {
     return this;
   }
 
+  /** Loads the changed bytes. Meanwhile the page list is incomplete: the viewer draws nothing until the reload. */
   async swapPdf() {
-    const { pdf } = await this.openPdf(this.bytes);
-    const old = this.pdf;
-    this.pdf = pdf;
-    if (old) old.loadingTask.destroy();
-    await this.readInfo();
+    this.swapping = true;
+    try {
+      const { pdf } = await this.openPdf(this.bytes);
+      const old = this.pdf;
+      this.pdf = pdf;
+      if (old) old.loadingTask.destroy();
+      await this.readInfo();
+    } finally { this.swapping = false; }
   }
 
   async readInfo() {
@@ -204,7 +208,7 @@ export class Doc {
       copy.forEach((a) => { a.page = i; });
       next.set(i, copy);
     });
-    // Beim Duplizieren brauchen Kopien eigene Kennungen.
+    // Duplicated pages: the copies need ids of their own.
     const seen = new Set();
     for (const list of next.values()) for (const a of list) { if (seen.has(a.id)) a.id = `${a.id}-${cryptoRandom().slice(0, 6)}`; seen.add(a.id); }
     this.annots = next;

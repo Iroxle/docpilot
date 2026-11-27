@@ -36,17 +36,19 @@ function buildMenu({ recent, send, openRecent, devtools }) {
       submenu: [
         c('Open...', 'open', 'CmdOrCtrl+O'),
         { label: 'Recent files', submenu: recent.length ? [...recent.slice(0, 12).map((r) => ({ label: r.name, click: () => openRecent(r.path) })), sep, c('Clear list', 'recent-clear')] : [{ label: '(none)', enabled: false }] },
-        { label: 'Create', submenu: [c('PDF from file...', 'create-from-file'), c('PDF from scanner...', 'create-scan'), c('PDF from clipboard', 'create-clipboard', 'CmdOrCtrl+Alt+V'), c('Blank page', 'create-blank', 'CmdOrCtrl+Shift+N'), sep, c('Combine files into a single PDF...', 'tool-combine')] },
+        { label: 'Create', submenu: [c('PDF from file...', 'create-from-file'), c('Separate PDFs from files...', 'create-separate'), c('PDF from scanner...', 'create-scan'), c('PDF from clipboard', 'create-clipboard', 'CmdOrCtrl+Alt+V'), c('Blank page', 'create-blank', 'CmdOrCtrl+Shift+N'), sep, c('Combine files into a single PDF...', 'tool-combine')] },
         sep,
         c('Save', 'save', 'CmdOrCtrl+S'),
         c('Save as...', 'save-as', 'CmdOrCtrl+Shift+S'),
         c('Save as optimized PDF...', 'tool-compress'),
         c('Revert (last save)', 'revert'),
         sep,
-        { label: 'Export to', submenu: [c('Microsoft Word (.docx)...', 'export', undefined, 'docx'), c('Microsoft Excel (.xlsx)...', 'export', undefined, 'xlsx'), c('Microsoft PowerPoint (.pptx)...', 'export', undefined, 'pptx'), sep, c('Image (PNG)...', 'export', undefined, 'png'), c('Image (JPEG)...', 'export', undefined, 'jpeg'), sep, c('HTML web page...', 'export', undefined, 'html'), c('Rich Text (.rtf)...', 'export', undefined, 'rtf'), c('Plain text (.txt)...', 'export', undefined, 'txt'), c('PDF/A...', 'tool-pdfa')] },
+        { label: 'Export to', submenu: [c('Microsoft Word (.docx)...', 'export', undefined, 'docx'), c('Microsoft Excel (.xlsx)...', 'export', undefined, 'xlsx'), c('Microsoft PowerPoint (.pptx)...', 'export', undefined, 'pptx'), sep, c('Image (PNG)...', 'export', undefined, 'png'), c('Image (JPEG)...', 'export', undefined, 'jpeg'), sep, c('HTML web page...', 'export', undefined, 'html'), c('Rich Text (.rtf)...', 'export', undefined, 'rtf'), c('Plain text (.txt)...', 'export', undefined, 'txt'), c('Markdown (.md)...', 'export', undefined, 'md'), sep, c('All images...', 'export-images'), c('PDF/A...', 'tool-pdfa')] },
         c('Password protection...', 'tool-encrypt'),
+        c('Action wizard...', 'action-wizard'),
         sep,
         c('Close', 'close-tab', 'CmdOrCtrl+W'),
+        c(MAC ? 'Show in Finder' : 'Show in Explorer', 'reveal'),
         c('Properties...', 'properties', 'CmdOrCtrl+D'),
         c('Print...', 'print', 'CmdOrCtrl+P'),
         // On a Mac, "Quit DocPilot" is in the app menu.
@@ -109,6 +111,7 @@ function buildMenu({ recent, send, openRecent, devtools }) {
       submenu: [
         c('Next tab', 'tab-next', 'CmdOrCtrl+Tab'),
         c('Previous tab', 'tab-prev', 'CmdOrCtrl+Shift+Tab'),
+        c('Reopen closed tab', 'reopen-closed', 'CmdOrCtrl+Shift+T'),
         c('Close all tabs', 'close-all'),
         sep,
         { role: 'minimize', label: 'Minimize' },
@@ -118,6 +121,7 @@ function buildMenu({ recent, send, openRecent, devtools }) {
     {
       label: 'Help',
       submenu: [
+        c('Search commands...', 'command-palette', 'CmdOrCtrl+Shift+P'),
         c('Keyboard shortcuts', 'shortcuts', 'F1'),
         { label: 'Developer tools', accelerator: 'CmdOrCtrl+Shift+F12', click: devtools },
         sep,

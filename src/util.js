@@ -11,8 +11,8 @@ const MAC_TEXT = [
   [/\bCtrl\+(Alt\+)?(Shift\+)?/g, (_m, alt, shift) => `${alt ? '⌥' : ''}${shift ? '⇧' : ''}⌘`],
   [/^Del$/, '⌫'],
   [/Same as Windows/g, 'Same as macOS'],
+  [/Show in Explorer/g, 'Show in Finder'],
   [/the Windows setting \(Colors > Mode\)/g, 'the macOS setting (System Settings > Appearance)'],
-  [/the Windows policy \(HKLM\\SOFTWARE\\Policies\\DocPilot\)/g, 'a configuration profile (com.docpilot.app)'],
 ];
 export const macText = (s) => (MAC && typeof s === 'string' ? MAC_TEXT.reduce((t, [re, to]) => t.replace(re, to), s) : s);
 
@@ -24,7 +24,7 @@ export function h(tag, props, ...kids) {
   for (const [k, v] of Object.entries(props || {})) {
     if (v === undefined || v === null || v === false) continue;
     if (k === 'class') e.className = v;
-    else if (k === 'style' && typeof v === 'object') Object.assign(e.style, v);
+    else if (k === 'style' && typeof v === 'object') for (const [p, x] of Object.entries(v)) { if (p.startsWith('--')) e.style.setProperty(p, x); else e.style[p] = x; }
     else if (k === 'data') Object.entries(v).forEach(([a, b]) => { e.dataset[a] = b; });
     else if (k.startsWith('on')) e.addEventListener(k.slice(2).toLowerCase(), v);
     else if (k === 'title') e.title = macText(v);
@@ -48,7 +48,10 @@ const P = {
   rotR: 'M15 8a6 6 0 1 0 1 5M16 3v5h-5', rotL: 'M5 8a6 6 0 1 1-1 5M4 3v5h5', trash: 'M4 6h12M8 6V4h4v2M6 6l1 11h6l1-11', dup: 'M7 7h10v10H7zM4 13V3h10', extract: 'M6 3h8v5M10 8v9M6 13l4 4 4-4', fit: 'M3 7V3h4M13 3h4v4M17 13v4h-4M7 17H3v-4', width: 'M2 10h16M5 7l-3 3 3 3M15 7l3 3-3 3', more: 'M4 10h.01M10 10h.01M16 10h.01', menu: 'M3 5h14M3 10h14M3 15h14',
   rect: 'M3 5h14v10H3z', ellipse: 'M10 4c4.5 0 8 2.7 8 6s-3.5 6-8 6-8-2.7-8-6 3.5-6 8-6z', line: 'M4 16 16 4', arr: 'M4 16 16 4M9 4h7v7', poly: 'M10 3l7 5-3 9H6L3 8z', polyline: 'M3 15l5-9 4 7 5-9', cloud: 'M6 15a3 3 0 0 1-.5-6A4.5 4.5 0 0 1 14 7.6 3.7 3.7 0 0 1 14.5 15z', eraser: 'M8 17l-5-5 8-8 6 6-7 7zM6 9l5 5', stamp: 'M8 9a2 2 0 1 1 4 0c0 2-1 3-1 4h4l1 2H4l1-2h4c0-1-1-2-1-4zM4 17h12', caret: 'M4 15 10 5l6 10', replace: 'M3 10h14M7 5h6M7 15h6', check: 'M4 10l4 4 8-9', cross: 'M5 5l10 10M15 5 5 15', dot: 'M10 7a3 3 0 1 0 0 6 3 3 0 0 0 0-6z', date: 'M3 5h14v12H3zM3 9h14M7 3v4M13 3v4',
   link: 'M8 12l4-4M7 9l-2 2a3 3 0 0 0 4 4l2-2M13 11l2-2a3 3 0 0 0-4-4L9 7', img: 'M3 4h14v12H3zM3 13l4-4 3 3 3-2 4 4M13 7h.01', crop: 'M5 2v13h13M2 5h13v13', header: 'M3 3h14v14H3zM3 7h14M3 13h14', watermark: 'M10 3s5 5 5 9a5 5 0 0 1-10 0c0-4 5-9 5-9z', bg: 'M3 3h14v14H3zM3 9l6-6M3 15 15 3M9 17l8-8', bates: 'M3 5v10M6 5v10M9 5v10M13 5v10M17 5v10', blank: 'M5 2h7l4 4v12H5zM12 2v4h4', split: 'M10 2v16M3 6h4M3 14h4M13 6h4M13 14h4', insert: 'M5 2h7l4 4v12H5zM10 8v6M7 11h6',
-  chk: 'M3 3h14v14H3zM6 10l3 3 5-6', radio: 'M10 2a8 8 0 1 0 0 16 8 8 0 0 0 0-16zM10 7a3 3 0 1 0 0 6 3 3 0 0 0 0-6z', list: 'M3 3h14v14H3zM6 7h8M6 10h8M6 13h8', dd: 'M3 6h14v8H3zM12 9l1.5 2 1.5-2', btn: 'M2 6h16v8H2zM7 10h6', speak: 'M3 8v4h3l4 4V4L6 8zM13 7a4 4 0 0 1 0 6M15 5a7 7 0 0 1 0 10', snapshot: 'M3 6h3l2-2h4l2 2h3v11H3zM10 8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z', gear: 'M10 7a3 3 0 1 0 0 6 3 3 0 0 0 0-6zM10 2v3M10 15v3M2 10h3M15 10h3M4 4l2 2M14 14l2 2M16 4l-2 2M6 14l-2 2', ruler: 'M2 7h16v6H2zM5 7v3M8 7v2M11 7v3M14 7v2', share: 'M14 3l4 4-4 4M18 7h-6a6 6 0 0 0-6 6v4',
+  chk: 'M3 3h14v14H3zM6 10l3 3 5-6', radio: 'M10 2a8 8 0 1 0 0 16 8 8 0 0 0 0-16zM10 7a3 3 0 1 0 0 6 3 3 0 0 0 0-6z', list: 'M3 3h14v14H3zM6 7h8M6 10h8M6 13h8', dd: 'M3 6h14v8H3zM12 9l1.5 2 1.5-2', btn: 'M2 6h16v8H2zM7 10h6', speak: 'M3 8v4h3l4 4V4L6 8zM13 7a4 4 0 0 1 0 6M15 5a7 7 0 0 1 0 10', snapshot: 'M3 6h3l2-2h4l2 2h3v11H3zM10 8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z', gear: 'M8.6 2.5h2.8l.5 2.1 1.5.7 1.9-1.1 2 2-1.1 1.9.7 1.5 2.1.5v2.8l-2.1.5-.7 1.5 1.1 1.9-2 2-1.9-1.1-1.5.7-.5 2.1H8.6l-.5-2.1-1.5-.7-1.9 1.1-2-2 1.1-1.9-.7-1.5-2.1-.5V8.6l2.1-.5.7-1.5-1.1-1.9 2-2 1.9 1.1 1.5-.7zM10 7.6a2.4 2.4 0 1 0 0 4.8 2.4 2.4 0 0 0 0-4.8z', ruler: 'M2 7h16v6H2zM5 7v3M8 7v2M11 7v3M14 7v2', share: 'M14 3l4 4-4 4M18 7h-6a6 6 0 0 0-6 6v4',
+  reverse: 'M6 3v14M3 6l3-3 3 3M14 17V3M11 14l3 3 3-3', boxes: 'M2 2h16v16H2zM5 5h10v10H5zM8 8h4v4H8z',
+  home: 'M3 9.5 10 3.5l7 6M5 8v8.5h4v-5h2v5h4V8', sidebar: 'M3 4h14v12H3zM8 4v12M4.5 7h2M4.5 9.5h2', file: 'M5 2h7l4 4v12H5zM12 2v4h4M7.5 10h5M7.5 13h5',
+  drop: 'M10 3v9M6.5 8.5 10 12l3.5-3.5M3 13v3.5h14V13',
 };
 export function icon(name) {
   const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -59,6 +62,8 @@ export function icon(name) {
   return s;
 }
 export const ibtn = (name, title, onclick, extra = {}) => h('button', { class: 'ib', title, onclick, type: 'button', ...extra }, icon(name));
+/** A hint where there is nothing yet: an icon, a short title and, if useful, what to do. */
+export const emptyState = (ic, title, hint, ...more) => h('div', { class: 'empty' }, h('span', { class: 'em-ic' }, icon(ic)), h('b', {}, title), hint ? h('span', { class: 'em-hint' }, hint) : null, ...more);
 
 function toastRoot() {
   let r = $('#toasts');

@@ -1,9 +1,10 @@
 // Right sidebar and page management.
-import { h, $, ibtn, icon, cssColor, fmtDate, fmtSize, toast, errToast, formDialog, contextMenu, debounce } from './util.js';
-import { setOutline, addAttachment, removeAttachment, rotatePages, reorderPages, duplicatePages } from './pdf/ops.js';
+import { h, $, ibtn, icon, cssColor, fmtDate, fmtSize, toast, errToast, formDialog, contextMenu, debounce, emptyState } from './util.js';
+import { setOutline, addAttachment, removeAttachment, rotatePages, reorderPages, duplicatePages, readTags, setTagProps } from './pdf/ops.js';
+import { TAG_TYPES } from './pdf/a11y.js';
 import { signatureDetails } from './pdf/sign.js';
 
-const RAIL = [['comments', 'comment', 'Comments'], ['thumbs', 'thumbs', 'Page thumbnails'], ['bookmarks', 'bookmark', 'Bookmarks'], ['attachments', 'clip', 'Attachments'], ['layers', 'layers', 'Layers'], ['signatures', 'cert', 'Signatures'], ['search', 'search', 'Advanced search']];
+const RAIL = [['comments', 'comment', 'Comments'], ['thumbs', 'thumbs', 'Page thumbnails'], ['bookmarks', 'bookmark', 'Bookmarks'], ['attachments', 'clip', 'Attachments'], ['layers', 'layers', 'Layers'], ['signatures', 'cert', 'Signatures'], ['tags', 'access', 'Tags'], ['search', 'search', 'Advanced search']];
 const STATES = [['', 'No status'], ['Accepted', 'Accepted'], ['Rejected', 'Rejected'], ['Cancelled', 'Cancelled'], ['Completed', 'Completed']];
 
 /** Loads thumbnails only when they become visible. */
@@ -32,8 +33,24 @@ export class Panels {
   get viewer() { return this.app.viewer; }
 
   toggle(id) { if (this.current === id) this.hide(); else this.show(id); }
-  hide() { this.current = null; this.panel.hidden = true; this.sync(); this.app.viewer.scheduleRender(); }
-  show(id) { this.current = id; this.panel.hidden = false; this.sync(); this.render(); }
+  hide() { this.current = null; this.sync(); if (!this.panel.hidden) this.slide(false); }
+  show(id) {
+    const closed = this.panel.hidden || this.panel.classList.contains('closing');
+    this.current = id; this.panel.hidden = false;
+    if (closed) this.slide(true);
+    this.sync(); this.render();
+  }
+  /** The sidebar slides in and out (at once with "reduce motion"); the pages are drawn again for the new width. */
+  slide(open) {
+    const p = this.panel;
+    clearTimeout(this.slideTimer);
+    p.classList.remove('opening', 'closing');
+    const done = () => { p.classList.remove('opening', 'closing'); if (!open && !this.current) p.hidden = true; this.app.viewer.scheduleRender(); };
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) { done(); return; }
+    void p.offsetWidth;
+    p.classList.add(open ? 'opening' : 'closing');
+    this.slideTimer = setTimeout(done, 280);
+  }
   sync() { [...this.rail.children].forEach((b) => b.classList.toggle('active', b.dataset.panel === this.current)); }
   refresh() { if (this.current && this.doc) this.render(); }
 
@@ -44,7 +61,7 @@ export class Panels {
   render() {
     if (!this.doc) return;
     const token = (this.renderToken = {});
-    const m = { comments: 'renderComments', thumbs: 'renderThumbs', bookmarks: 'renderBookmarks', attachments: 'renderAttachments', layers: 'renderLayers', signatures: 'renderSignatures', search: 'renderSearch' };
+    const m = { comments: 'renderComments', thumbs: 'renderThumbs', bookmarks: 'renderBookmarks', attachments: 'renderAttachments', layers: 'renderLayers', signatures: 'renderSignatures', search: 'renderSearch', tags: 'renderTags' };
     Promise.resolve(this[m[this.current]](token)).catch(errToast);
   }
 
@@ -63,7 +80,11 @@ export class Panels {
       h('div', { style: { display: 'flex', gap: '6px', margin: '6px 0', alignItems: 'center' } },
         h('select', { class: 'fld', onchange: (e) => { this.filter.sort = e.target.value; this.render(); } }, [['page', 'By page'], ['date', 'By date'], ['author', 'By author'], ['type', 'By type']].map(([v, l]) => h('option', { value: v, selected: this.filter.sort === v }, l)))),
     );
-    if (!list.length) body.append(h('div', { class: 'empty' }, doc.signed ? 'In signed documents, existing comments are only visible on the page.' : 'No comments yet.'));
+    if (!list.length) {
+      body.append(doc.signed ? emptyState('cert', 'Comments stay on the page', 'In signed documents, existing comments are only shown on the page.')
+        : q ? emptyState('search', 'No comment matches', 'Try another word, an author or a type.')
+          : emptyState('comment', 'No comments yet', 'Choose a comment tool on the left, or press S for a sticky note.'));
+    }
     let lastPage = -1;
     for (const a of list) {
       if (this.filter.sort === 'page' && a.page !== lastPage) { body.append(h('div', { class: 'pg-title' }, `Page ${doc.label(a.page)}`)); lastPage = a.page; }
@@ -167,21 +188,56 @@ export class Panels {
       { label: 'Insert blank page after', run: () => this.app.tools.insertBlankAt(list().pop() + 1) },
       { label: 'Insert from file...', run: () => this.app.tools.insertFromFile(list().pop() + 1) },
       { label: 'Extract...', run: () => this.app.tools.extract(list()) },
+      ...(sel.size > 1 ? [{ label: 'Reverse order', run: () => this.app.tools.reversePagesDialog(list()) }] : []),
       '-',
       { label: 'Delete', run: () => this.app.tools.deletePagesAsk(list()) },
     ]);
   }
   renderThumbs() {
     this.thumbSel = this.thumbSel || new Set();
-    const items = this.doc.pages.map((_, i) => this.thumbCard(i, 150, this.thumbSel, { onClick: (p) => this.viewer.goto(p) }));
+    const size = Math.min(320, Math.max(60, Number(this.app.settings.thumbSize) || 150));
+    const items = this.doc.pages.map((_, i) => this.thumbCard(i, size, this.thumbSel, { onClick: (p) => this.viewer.goto(p) }));
     const box = h('div', { class: 'thumbs' }, items);
-    this.frame('Page thumbnails', [ibtn('pages', 'Organize pages', () => this.app.run('tool-organize'))], box);
+    // Thumbnail size: smaller to see more pages, larger to see details.
+    const slider = h('input', { type: 'range', class: 'thumb-size', min: 60, max: 320, step: 10, value: size, title: 'Thumbnail size', 'aria-label': 'Thumbnail size', data: { thumbSize: '1' } });
+    slider.addEventListener('change', () => { this.app.settings.thumbSize = +slider.value; this.app.saveSettings(); this.renderThumbs(); });
+    this.frame('Page thumbnails', [slider, ibtn('pages', 'Organize pages', () => this.app.run('tool-organize'))], box);
     lazyThumbs(box.parentElement, items, (el) => el._render());
     box.querySelector('.thumb.on')?.scrollIntoView({ block: 'center' });
   }
   markCurrentThumb(i) {
     if (this.current !== 'thumbs') return;
     this.panel.querySelectorAll('.thumb').forEach((t) => { const on = +t.dataset.page === i; t.classList.toggle('on', on); if (on) t.scrollIntoView({ block: 'nearest' }); });
+  }
+
+  // --- Tags (accessibility structure) -------------------------------------------------------
+  async renderTags(token) {
+    const tree = await readTags(this.doc.bytes);
+    if (token !== this.renderToken) return;
+    const T = this.app.tools;
+    if (!tree.length) {
+      this.frame('Tags', [], emptyState('access', 'No tags yet', 'Without tags, screen readers have to guess the reading order.', h('button', { class: 'btn primary', type: 'button', style: { marginTop: '10px' }, onclick: () => T.autoTagDialog() }, 'Automatically tag document')));
+      return;
+    }
+    const label = (n) => [h('span', { class: 'tag-type' }, `<${n.type}>`), n.alt ? h('span', { class: 'tag-alt' }, ` ${n.alt}`) : n.title ? h('span', { class: 'tag-alt' }, ` ${n.title}`) : null, n.type === 'Figure' && !n.alt ? h('span', { class: 'tag-warn', title: 'No alternate text' }, ' !') : null];
+    const nodes = (list) => h('ul', { class: 'tree' }, list.map((n) => {
+      const kids = n.children.length ? nodes(n.children) : null;
+      const tw = h('button', { class: 'tw', type: 'button', onclick: () => { if (kids) { kids.hidden = !kids.hidden; tw.replaceChildren(icon(kids.hidden ? 'chevR' : 'chevD')); } } }, kids ? icon('chevD') : '');
+      const row = h('div', { class: `tree-row ${this.selTag === n.ref ? 'sel' : ''}` }, tw, h('button', { class: 'lb', type: 'button', title: `${n.type}${n.page !== null ? ` (page ${n.page + 1})` : ''}`, data: { tag: n.ref || '', tagType: n.type }, onclick: () => {
+        this.selTag = n.ref; this.selTagNode = n;
+        this.panel.querySelectorAll('.tree-row').forEach((r) => r.classList.remove('sel')); row.classList.add('sel');
+        if (n.page !== null) this.viewer.goto(n.page);
+      }, ondblclick: () => this.tagEdit() }, label(n)));
+      return h('li', {}, row, kids);
+    }));
+    this.frame('Tags', [ibtn('edit', 'Tag properties', () => this.tagEdit()), ibtn('img', 'Alternate text for images', () => T.altTextDialog())], nodes(tree));
+  }
+  async tagEdit() {
+    const n = this.selTagNode;
+    if (!n || !n.ref) { toast('Please select a tag first.'); return; }
+    const r = await formDialog('Tag properties', [{ k: 'type', label: 'Type', type: 'select', options: TAG_TYPES, value: TAG_TYPES.includes(n.type) ? n.type : 'P' }, { k: 'alt', label: 'Alternate text', type: 'textarea', value: n.alt || '' }]);
+    if (!r) return;
+    await this.op((b) => setTagProps(b, n.ref, { type: r.type, alt: r.alt }));
   }
 
   // --- Bookmarks -----------------------------------------------------------------------
@@ -216,7 +272,34 @@ export class Panels {
       if (this.selBm) this.selBm.children.push(node); else tree.push(node);
       await this.saveOutline(tree);
     };
-    this.frame('Bookmarks', [ibtn('plus', 'New bookmark', add), ibtn('edit', 'Rename', () => this.bmRename(tree)), ibtn('chevU', 'Move up', () => this.bmMove(tree, -1)), ibtn('chevD', 'Move down', () => this.bmMove(tree, 1)), ibtn('trash', 'Delete', () => this.bmDelete(tree))], tree.length ? treeEl : h('div', { class: 'empty' }, 'This document has no bookmarks.'));
+    // Search bookmarks: matching titles stay visible with the bookmarks above them.
+    const search = h('input', { type: 'search', class: 'bm-search', placeholder: 'Search bookmarks', 'aria-label': 'Search bookmarks', spellcheck: 'false', data: { bmSearch: '1' } });
+    search.addEventListener('keydown', (e) => e.stopPropagation());
+    search.addEventListener('input', () => this.filterBookmarks(treeEl, search.value));
+    const body = tree.length ? h('div', {}, search, treeEl) : null;
+    this.frame('Bookmarks', [ibtn('plus', 'New bookmark', add), ibtn('edit', 'Rename', () => this.bmRename(tree)), ibtn('chevU', 'Move up', () => this.bmMove(tree, -1)), ibtn('chevD', 'Move down', () => this.bmMove(tree, 1)), ibtn('trash', 'Delete', () => this.bmDelete(tree))], body || emptyState('bookmark', 'No bookmarks', 'Add one for the current page with +.'));
+  }
+  /** Shows the bookmarks whose title contains the text (and the bookmarks above them); all when empty. */
+  filterBookmarks(treeEl, q) {
+    const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+    const visit = (ul) => {
+      let any = false;
+      for (const li of ul.children) {
+        const own = li.querySelector(':scope > .tree-row .lb')?.textContent.toLowerCase() || '';
+        const sub = li.querySelector(':scope > ul');
+        const kids = sub ? visit(sub) : false;
+        const hit = !words.length || words.every((w) => own.includes(w));
+        li.hidden = !(hit || kids);
+        li.classList.toggle('bm-hit', !!words.length && hit);
+        if (sub && words.length && kids) sub.hidden = false;
+        any = any || hit || kids;
+      }
+      return any;
+    };
+    const found = visit(treeEl);
+    let none = treeEl.parentElement?.querySelector('.bm-none');
+    if (!found && !none) { none = emptyState('search', 'No bookmark matches'); none.classList.add('bm-none'); treeEl.after(none); }
+    if (found && none) none.remove();
   }
   treeNodes(items) {
     return h('ul', { class: 'tree' }, items.map((it) => {
@@ -252,7 +335,7 @@ export class Panels {
       const p = await window.dp.saveDialog({ title: 'Save attachment', defaultPath: f.filename, filters: [{ name: 'All files', extensions: ['*'] }] });
       if (p) { await window.dp.writeFile(p, data); toast('Attachment saved', 'ok'); }
     };
-    const body = list.length ? list.map((f) => h('div', { class: 'kv' }, icon('clip'), h('span', { class: 'g', title: f.description || f.filename }, f.filename), h('small', {}, f.content ? fmtSize(f.content.length) : ''), ibtn('save', 'Save', () => save(f).catch(errToast)), ibtn('trash', 'Remove', () => this.op((b) => removeAttachment(b, f.filename))))) : h('div', { class: 'empty' }, 'No attachments.');
+    const body = list.length ? list.map((f) => h('div', { class: 'kv' }, icon('clip'), h('span', { class: 'g', title: f.description || f.filename }, f.filename), h('small', {}, f.content ? fmtSize(f.content.length) : ''), ibtn('save', 'Save', () => save(f).catch(errToast)), ibtn('trash', 'Remove', () => this.op((b) => removeAttachment(b, f.filename))))) : emptyState('clip', 'No attachments', 'Attach a file to the document with +.');
     this.frame('Attachments', [ibtn('plus', 'Attach file', () => this.addAttachment())], body);
   }
   async attachmentContent(f) {
@@ -271,7 +354,7 @@ export class Panels {
     const cfg = this.doc.ocConfig;
     const groups = cfg?.getGroups?.();
     const entries = groups ? Object.entries(groups) : [];
-    const body = entries.length ? entries.map(([id, g]) => h('label', { class: 'kv' }, h('input', { type: 'checkbox', checked: cfg.isVisible ? cfg.isVisible(g) : g.visible, onchange: (e) => { cfg.setVisibility(id, e.target.checked); this.viewer.invalidate(); } }), h('span', { class: 'g' }, g.name || id))) : h('div', { class: 'empty' }, 'This document has no layers.');
+    const body = entries.length ? entries.map(([id, g]) => h('label', { class: 'kv' }, h('input', { type: 'checkbox', checked: cfg.isVisible ? cfg.isVisible(g) : g.visible, onchange: (e) => { cfg.setVisibility(id, e.target.checked); this.viewer.invalidate(); } }), h('span', { class: 'g' }, g.name || id))) : emptyState('layers', 'No layers', 'This document has no layers that can be shown or hidden.');
     this.frame('Layers', [], body);
   }
 
@@ -295,7 +378,7 @@ export class Panels {
         s.notAfter ? h('div', {}, `Certificate valid until: ${fmtDate(s.notAfter)}`) : null,
         s.error ? h('div', { style: { color: 'var(--danger)' } }, s.error) : null,
         s.fingerprint ? h('details', {}, h('summary', {}, 'SHA-256 fingerprint'), h('code', { style: { wordBreak: 'break-all', fontSize: '11px' } }, s.fingerprint)) : null);
-    }) : h('div', { class: 'empty' }, 'This document contains no digital signatures.');
+    }) : emptyState('cert', 'No digital signatures', 'Sign or certify the document under "Use certificates".');
     this.frame('Signatures', [], body);
   }
 
@@ -311,9 +394,10 @@ export class Panels {
         const pre = m.text.slice(Math.max(0, m.start - 30), m.start); const hit = m.text.slice(m.start, m.end); const post = m.text.slice(m.end, m.end + 30);
         return h('button', { class: 'res', type: 'button', onclick: () => { this.app.find.matches = found; this.app.find.query = input.value; this.app.find.paintAll(); this.app.find.setCur(found.indexOf(m)); } }, h('small', { style: { color: 'var(--grey)' } }, `Page ${m.page + 1}: `), pre, h('mark', {}, hit), post);
       }));
+      if (!found.length) results.append(emptyState('search', 'No results', 'Check the spelling, or turn off "Match case" and "Whole words only".'));
     };
     input.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') go().catch(errToast); });
-    this.frame('Advanced search', [], [input, h('label', { class: 'kv' }, cs, 'Gross-/Kleinschreibung'), h('label', { class: 'kv' }, ww, 'Whole words only'), h('button', { class: 'btn primary', type: 'button', style: { margin: '6px 0' }, onclick: () => go().catch(errToast) }, 'Find'), results]);
+    this.frame('Advanced search', [], [input, h('label', { class: 'kv' }, cs, 'Match case'), h('label', { class: 'kv' }, ww, 'Whole words only'), h('button', { class: 'btn primary', type: 'button', style: { margin: '6px 0' }, onclick: () => go().catch(errToast) }, 'Find'), results]);
     setTimeout(() => input.focus(), 20);
   }
 }

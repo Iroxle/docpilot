@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/hero.png" alt="DocPilot: edit, comment and sign PDFs. Everything stays on your computer. A PDF editor for Windows and Mac with a familiar, easy-to-use layout. Shown: a sample magazine in two-page view, and the same magazine with comments in the dark appearance." width="100%">
+  <img src="docs/hero.png" alt="DocPilot: edit, comment and sign PDFs. Everything stays on your computer. A PDF editor for Windows and Mac with a familiar, easy-to-use layout. Shown: a sample magazine in two-page view with the tabs in the title bar, and the same magazine with comments in the dark appearance." width="100%">
 </p>
 
 <p align="center">
@@ -46,6 +46,20 @@ For IT departments there is an MSI for silent, machine-wide installation. JavaSc
 <details>
 <summary><strong>Recent changes</strong></summary>
 
+- **2026-11-27 (1.2.0):** New look: tabs in the title bar with the menu and a search field for all tools and commands.
+- **2026-11-27 (1.2.0):** New home page: recent files as pictures of their first page; colored tools with a search in the tools pane.
+- **2026-11-27 (1.2.0):** Edit PDF: the text field shows bold and regular parts and columns exactly as they are set; edited text no longer disappears.
+- **2026-11-27 (1.2.0):** Check boxes and radio buttons in PDF forms show whether they are checked again.
+- **2026-11-27 (1.2.0):** Accessibility: automatic tagging, Tags panel, alternate text and a full check with fixes.
+- **2026-11-27 (1.2.0):** OCR in several files, scan clean-up, straightened phone photos, review of recognized words.
+- **2026-11-27 (1.2.0):** Action wizard for several files; XFA forms become normal pages and form fields.
+- **2026-11-27 (1.2.0):** Change or remove header, footer, watermark and background; print several pages per sheet and booklets.
+- **2026-11-27 (1.2.0):** Print production: grayscale, hairlines, printer marks, page boxes; export all images and Markdown.
+- **2026-11-27 (1.2.0):** Measure tools snap to lines and points; search commands; reopen closed tab; recovery after a crash.
+
+<details>
+<summary><strong>Older</strong></summary>
+
 - **2026-11-26 (1.1.0):** DocPilot for Mac: disk images for Apple silicon and Intel Macs, with the same features as on Windows.
 - **2026-11-26 (1.1.0):** Forms format and calculate without JavaScript; field properties, date and image fields, XFDF/FDF/XML/CSV data.
 - **2026-11-26 (1.1.0):** Saving appends the changes: signed documents can be filled in and signed again; certify; PDF/A check and conversion.
@@ -54,10 +68,6 @@ For IT departments there is an MSI for silent, machine-wide installation. JavaSc
 - **2026-11-26 (1.1.0):** Combine, insert, extract and split keep bookmarks, links, form fields, layers and attachments.
 - **2026-11-26 (1.1.0):** Edit PDF: moved text keeps its exact font and size, and tables on invoices stay one block.
 - **2026-11-26 (1.1.0):** Security: updated built-in browser engine (Electron 45.5.0).
-
-<details>
-<summary><strong>Older</strong></summary>
-
 - **2026-11-24 (1.0.2):** Find and replace in the whole document, including recognized text in scans.
 - **2026-11-24 (1.0.2):** Form fields are detected automatically, with a preview before they are created.
 - **2026-11-24 (1.0.2):** Tables arrive as real tables in Word, Excel and PowerPoint exports.
@@ -90,7 +100,7 @@ The full list is in [CHANGELOG.md](CHANGELOG.md).
 
 ## Overview
 
-DocPilot is a program for Windows and macOS for working with PDF files. The interface uses a familiar layout: menu bar, tabs, tools pane on the left, quick tools on the side, sidebar on the right and page controls at the bottom right. For Windows it is available as a setup program, as an MSI for IT deployment and as a portable version; for Mac as a disk image for Apple silicon and Intel.
+DocPilot is a program for Windows and macOS for working with PDF files. The interface uses a familiar layout: tabs in the title bar with the menu and a search field for all tools and commands, tools pane on the left, quick tools on the side, sidebar on the right and page controls at the bottom right. For Windows it is available as a setup program, as an MSI for IT deployment and as a portable version; for Mac as a disk image for Apple silicon and Intel.
 
 | Area | Selected features |
 |---|---|
@@ -114,7 +124,7 @@ The complete list, including all known limitations, is in **[FEATURES.md](FEATUR
 <table>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/screenshots/read.png" alt="Two-page view of a sample magazine: an illustrated cover and the table of contents, with all tools listed on the left">
+      <img src="docs/screenshots/read.png" alt="Two-page view of a sample magazine: an illustrated cover and the table of contents, with the tabs and a search field in the title bar and all tools listed on the left in their colors">
       <p align="center"><b>Read</b><br><sub>One or two pages side by side, thumbnails, bookmarks and full screen.</sub></p>
     </td>
     <td width="50%" valign="top">
@@ -128,12 +138,16 @@ The complete list, including all known limitations, is in **[FEATURES.md](FEATUR
       <p align="center"><b>Edit PDF</b><br><sub>Change text directly on the page, in the original layout.</sub></p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/screenshots/sign.png" alt="A subscription form with filled-in fields, a check mark and a handwritten signature">
+      <img src="docs/screenshots/sign.png" alt="A subscription form with filled-in fields, a checked box and a handwritten signature">
       <p align="center"><b>Fill and sign</b><br><sub>Form fields are detected automatically, then filled in and signed.</sub></p>
     </td>
   </tr>
   <tr>
-    <td colspan="2" valign="top">
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/home.png" alt="Home page: a large area to drop or open a PDF, the recent files as pictures of their first page, and colored tiles of the main tools">
+      <p align="center"><b>Home</b><br><sub>Drop or open a PDF; recent files appear as pictures of their first page.</sub></p>
+    </td>
+    <td width="50%" valign="top">
       <img src="docs/screenshots/organize.png" alt="Organize pages: large thumbnails of all six magazine pages with buttons to rotate, delete, insert, replace and split">
       <p align="center"><b>Organize pages</b><br><sub>Reorder, rotate, insert, replace and split pages.</sub></p>
     </td>

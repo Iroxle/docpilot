@@ -199,6 +199,31 @@ export function fieldName(label, fallback = 'Field') {
   const s = String(label || '').replace(/[_…]+/g, ' ').replace(/\./g, ' ').replace(/[:*\s]+$/g, '').replace(/^[\s:*•◦▪□☐○-]+/, '').replace(/\s+/g, ' ').trim();
   return (s.length > 40 ? s.slice(0, 40).replace(/\s+\S*$/, '') : s) || fallback;
 }
+const LETTER = /^\p{L}$/u;
+const LETTER_END = /^\p{L}[:*.]?$/u;
+/**
+ * Text of the words of a label, left to right. Letter-spaced text ("F U L L   N A M E") arrives as single letters: in a
+ * run of three or more single letters on one line, letters whose gap is not wider than the narrowest gap of the run
+ * (plus a little) belong to one word, so the label reads "FULL NAME". parts: [{ text, rect, y }].
+ */
+export function joinWords(parts) {
+  const glue = parts.map(() => false);
+  const sameLine = (a, b) => a.y === undefined || b.y === undefined || Math.abs(a.y - b.y) <= Math.max(1.5, (a.rect[3] - a.rect[1]) * 0.25);
+  for (let a = 0; a < parts.length;) {
+    if (!LETTER_END.test(parts[a].text)) { a++; continue; }
+    let b = a;
+    while (b + 1 < parts.length && LETTER.test(parts[b].text) && LETTER_END.test(parts[b + 1].text) && sameLine(parts[b], parts[b + 1])) b++;
+    if (b - a >= 2) {
+      const gap = (k) => parts[k].rect[0] - parts[k - 1].rect[2];
+      let min = Infinity; let high = 0;
+      for (let k = a + 1; k <= b; k++) min = Math.min(min, gap(k));
+      for (let k = a; k <= b; k++) high = Math.max(high, parts[k].rect[3] - parts[k].rect[1]);
+      for (let k = a + 1; k <= b; k++) glue[k] = gap(k) <= min + Math.max(0.8, high * 0.12);
+    }
+    a = b + 1;
+  }
+  return parts.map((w, k) => (k && !glue[k] ? ` ${w.text}` : w.text)).join('');
+}
 /** Makes a name unique: "Name", "Name 2", "Name 3". taken: set of the names in use (lowercase). */
 export function uniqueName(name, taken) {
   let out = name; let n = 2;
@@ -284,7 +309,7 @@ export function detectFields(input) {
     if (!inside.length) { cands.push({ kind: 'cell', rect: [c[0] + 1, c[1] + 1, c[2] - 1, c[3] - 1], source: 'box', prio: 4 }); continue; }
     // Label inside the box ("Name:" at the top left, the rest is free): field in the free part.
     const bx = [Math.min(...inside.map((x) => x.rect[0])), Math.min(...inside.map((x) => x.rect[1])), Math.max(...inside.map((x) => x.rect[2])), Math.max(...inside.map((x) => x.rect[3]))];
-    const label = inside.sort((p, q) => q.y - p.y || p.rect[0] - q.rect[0]).map((x) => x.text).join(' ');
+    const label = joinWords(inside.sort((p, q) => q.y - p.y || p.rect[0] - q.rect[0]));
     const oneLine = Math.max(...inside.map((x) => x.y)) - Math.min(...inside.map((x) => x.y)) < 3;
     if (!oneLine || !/:\s*$/.test(label)) continue;
     if (c[2] - bx[2] >= Math.max(40, w * 0.4)) cands.push({ kind: 'cell', rect: [bx[2] + 3, c[1] + 1, c[2] - 1, c[3] - 1], label, source: 'box', prio: 4 });
@@ -300,9 +325,10 @@ export function detectFields(input) {
   for (const w of sorted) {
     const p = phrases.find((q) => Math.abs(q.y - w.y) <= Math.max(1.5, w.height * 0.25) && w.rect[0] - q.rect[2] <= Math.max(q.height, w.height) * 0.9 && w.rect[0] >= q.rect[2] - 1
       && !breakers.some((b) => (b[0] + b[2]) / 2 > q.rect[2] - 1 && (b[0] + b[2]) / 2 < w.rect[0] + 1 && yOverlap(b, q.rect) > 0));
-    if (p) { p.text += ` ${w.text}`; p.rect = [p.rect[0], Math.min(p.rect[1], w.rect[1]), w.rect[2], Math.max(p.rect[3], w.rect[3])]; }
-    else phrases.push({ text: w.text, rect: w.rect.slice(), y: w.y, height: w.height });
+    if (p) { p.parts.push(w); p.rect = [p.rect[0], Math.min(p.rect[1], w.rect[1]), w.rect[2], Math.max(p.rect[3], w.rect[3])]; }
+    else phrases.push({ text: w.text, rect: w.rect.slice(), y: w.y, height: w.height, parts: [w] });
   }
+  for (const p of phrases) p.text = joinWords(p.parts);
   const blocked = (a, b, band) => cands.some((c) => c.rect[0] >= a - 1 && c.rect[2] <= b + 1 && yOverlap(c.rect, band) > 0);
   /** Label to the left: at the same height, nothing in between (direct) or across other fields. */
   const leftOf = (r, maxGap, direct = true) => {

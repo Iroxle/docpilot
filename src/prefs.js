@@ -14,6 +14,7 @@ export const DEFAULTS = {
   units: 'mm', gridSize: 10,
   speechRate: 1, speechVoice: '',
   searchCase: false, searchWhole: false,
+  autosaveMinutes: 2, thumbSize: 150, measureSnap: true,
   ocrOnOpen: 'ask', ocrOnCreate: true, ocrLang: 'deu+eng', ocrDeskew: false,
 };
 export const withDefaults = (s) => ({ ...DEFAULTS, ...(s || {}) });
@@ -26,12 +27,13 @@ const voices = () => {
 /** Categories in alphabetical order. */
 const CATEGORIES = () => [
   { id: 'general', label: 'General', fields: [
-    { k: 'appearance', type: 'select', label: 'Appearance', options: [['light', 'Light'], ['dark', 'Dark'], ['system', 'Same as Windows']], help: 'Default: Light. In the dark appearance, the menu bar, tabs, tools pane, sidebars, dialogs and the home page are dark. The PDF pages stay white like paper; only the background around the pages becomes dark. "Same as Windows" follows the Windows setting (Colors > Mode). The change takes effect immediately.' },
+    { k: 'appearance', type: 'select', label: 'Appearance', options: [['light', 'Light'], ['dark', 'Dark'], ['system', 'Same as Windows']], help: 'Default: Light. In the dark appearance, the title bar with the tabs, the tools pane, sidebars, dialogs and the home page are dark. The PDF pages stay white like paper; only the background around the pages becomes dark. "Same as Windows" follows the Windows setting (Colors > Mode). The change takes effect immediately.' },
     { k: 'restoreDocs', type: 'checkbox', label: 'Reopen the last open documents at startup' },
     { k: 'recentCount', type: 'select', label: 'Number of recent files', options: [[5, '5'], [10, '10'], [20, '20'], [30, '30']] },
   ] },
   { id: 'documents', label: 'Documents', fields: [
     { k: 'warnSigned', type: 'checkbox', label: 'Warn before changing a digitally signed document' },
+    { k: 'autosaveMinutes', type: 'select', label: 'Keep a copy of unsaved changes for recovery', options: [[0, 'Off'], [1, 'Every minute'], [2, 'Every 2 minutes'], [5, 'Every 5 minutes'], [10, 'Every 10 minutes']], help: 'If DocPilot is not closed properly (for example after a crash or a power cut), the documents with unsaved changes are offered for recovery at the next start. Password-protected documents are not copied.' },
   ] },
   { id: 'units', label: 'Units & Guides', fields: [
     { k: 'units', type: 'select', label: 'Unit (rulers and measuring)', options: [['mm', 'Millimeters'], ['cm', 'Centimeters'], ['in', 'Inches'], ['pt', 'Points']] },
@@ -101,10 +103,10 @@ export function openPreferences(current, startAt, policy = {}) {
         input = h('input', { type: 'checkbox', checked: !locked && !!v, disabled: locked, onchange: (e) => { if (!locked) work[f.k] = e.target.checked; } });
         input.dataset.pref = f.k;
         const help = locked
-          ? 'Blocked by IT. This feature stays off for security reasons. Only IT can enable it through the Windows policy (HKLM\\SOFTWARE\\Policies\\DocPilot).'
+          ? 'Blocked. This feature stays off for security reasons.'
           : f.help;
         return h('div', { class: `pref-row ${locked ? 'locked' : ''}` },
-          h('label', { class: 'pref-chk' }, input, h('span', {}, f.label), locked ? h('span', { class: 'pref-lock' }, 'Blocked by IT') : null),
+          h('label', { class: 'pref-chk' }, input, h('span', {}, f.label), locked ? h('span', { class: 'pref-lock' }, 'Blocked') : null),
           help ? h('div', { class: 'pref-help' }, help) : null);
       }
       if (f.type === 'select') {

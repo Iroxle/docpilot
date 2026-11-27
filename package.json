@@ -1,7 +1,7 @@
 {
   "name": "docpilot",
   "productName": "DocPilot",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "DocPilot - view, edit, comment on and sign PDFs",
   "author": "Iroxle",
   "private": true,
@@ -122,7 +122,10 @@
       "shortcutName": "DocPilot",
       "artifactName": "DocPilot-x64.${ext}",
       "upgradeCode": "E1A8691B-2960-47E5-8330-BDBDA666DA63",
-      "additionalWixArgs": ["-ext", "WixUtilExtension"]
+      "additionalWixArgs": [
+        "-ext",
+        "WixUtilExtension"
+      ]
     },
     "msiProjectCreated": "scripts/msi-hook.js",
     "mac": {

@@ -1,7 +1,7 @@
 // Tests the PDF core without an interface. Results are checked with PDF.js as an independent reader.
 import fs from 'node:fs';
 import assert from 'node:assert';
-import { PDFDocument, StandardFonts, rgb, PDFOperator, PDFName, PDFString, PDFDict, decodePDFRawStream } from '@cantoo/pdf-lib';
+import { PDFDocument, StandardFonts, rgb, PDFOperator, PDFName, PDFNumber, PDFString, PDFHexString, PDFDict, decodePDFRawStream } from '@cantoo/pdf-lib';
 import fontkit from '@cantoo/fontkit';
 import { getDocument, OPS } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import path from 'node:path';
@@ -10,6 +10,7 @@ import zlib from 'node:zlib';
 import fonts from '../electron/fonts.js';
 import * as ops from '../src/pdf/ops.js';
 import * as content from '../src/pdf/content.js';
+import * as rich from '../src/richedit.js';
 import * as glyphs from '../src/pdf/glyphs.js';
 import * as annots from '../src/pdf/annots.js';
 import * as sign from '../src/pdf/sign.js';
@@ -27,6 +28,17 @@ import * as af from '../src/pdf/afcalc.js';
 import * as formauthor from '../src/pdf/formauthor.js';
 import * as incremental from '../src/pdf/incremental.js';
 import * as pdfa from '../src/pdf/pdfa.js';
+import * as marks from '../src/pdf/marks.js';
+import * as boxes from '../src/pdf/boxes.js';
+import * as images from '../src/pdf/images.js';
+import * as markdown from '../src/pdf/markdown.js';
+import * as imposition from '../src/pdf/imposition.js';
+import * as snap from '../src/pdf/snap.js';
+import * as docfonts from '../src/pdf/docfonts.js';
+import * as a11y from '../src/pdf/a11y.js';
+import * as scanfix from '../src/pdf/scanfix.js';
+import * as xfa from '../src/pdf/xfa.js';
+import * as xml from '../src/pdf/xml.js';
 
 const readFont = async (f) => { try { return new Uint8Array(fs.readFileSync(`C:/Windows/Fonts/${f}`)); } catch { return null; } };
 const cases = [];
@@ -442,6 +454,41 @@ test('Watermark, header, Bates, crop, background', async () => {
   const cr = await ops.cropPages(b, [0], { left: 10, right: 10, top: 20, bottom: 20 });
   const v = (await (await open(cr)).getPage(1)).view;
   assert.deepEqual(v.map(Math.round), [10, 20, 585, 822]);
+});
+test('Page marks: header and footer, watermark and background found again, updated and removed', async () => {
+  let b = await fixture(3);
+  b = await ops.addHeaderFooter(b, { center: 'Old header', footRight: 'Page {page}', settings: { center: 'Old header' } }, readFont);
+  b = await ops.addWatermark(b, { text: 'DRAFT', size: 40, opacity: 0.3, rotation: 45, behind: true, pages: [0, 2], settings: { text: 'DRAFT' } }, readFont);
+  b = await ops.addBackground(b, { color: '#ffffee', settings: { color: '#ffffee' } });
+  let list = await ops.listMarks(b);
+  const by = (k) => list.find((m) => m.kind === k);
+  assert.deepEqual(by('HeaderFooter').pages, [0, 1, 2]);
+  assert.deepEqual(by('Watermark').pages, [0, 2]);
+  assert.equal(by('HeaderFooter').settings.center, 'Old header', 'the dialog values are stored with the mark');
+  assert.equal(marks.rangeText(by('Watermark').pages), '1, 3');
+  // Behind the content: background first, then the watermark, then the page; the header after the page.
+  const d = await PDFDocument.load(b);
+  const list0 = d.getPage(0).node.Contents().asArray().filter((o) => !marks.isWrapper(d.context, o));
+  const tags = list0.map((o) => marks.streamTag(d.context, o));
+  assert.deepEqual(tags.filter(Boolean), ['Background', 'Watermark', 'HeaderFooter']);
+  assert.ok(tags.indexOf('Watermark') < tags.indexOf(null), `the watermark lies behind the page content: ${tags}`);
+  // Update: the old header is replaced on all pages, the new one only goes where it is wanted.
+  b = await ops.addHeaderFooter(b, { center: 'New header', pages: [1], replace: true }, readFont);
+  let pdf = await open(b);
+  assert.doesNotMatch(await textOf(pdf, 1), /Old header/);
+  assert.match(await textOf(pdf, 2), /New header/);
+  assert.match(await textOf(pdf, 1), /Page 1 header line/, 'the page content stays');
+  // Remove: the watermark goes, the page content and the other marks stay.
+  const r = await ops.removeMarks(b, 'Watermark');
+  assert.equal(r.removed, 2);
+  pdf = await open(r.bytes);
+  assert.doesNotMatch(await textOf(pdf, 1), /DRAFT/);
+  assert.match(await textOf(pdf, 3), /Page 3 header line/);
+  list = await ops.listMarks(r.bytes);
+  assert.deepEqual(list.map((m) => m.kind).sort(), ['Background', 'HeaderFooter']);
+  const gone = await ops.removeMarks(r.bytes, ['Background', 'HeaderFooter']);
+  assert.deepEqual(await ops.listMarks(gone.bytes), []);
+  assert.match(await textOf(await open(gone.bytes), 2), /Second line on page 2/);
 });
 test('Multiline text with Windows fonts and foreign characters', async () => {
   for (const family of ['Calibri', 'Arial', 'Times New Roman', 'Courier New', 'Verdana', 'Tahoma', 'Georgia', 'Segoe UI', 'Helvetica']) {
@@ -1195,6 +1242,14 @@ test('Detect form fields: lines, underscores, boxes, circles, table, names, exis
   const boxed = formdetect.detectFields({ words: [w('Firma:', 64, 706, 32)], lines: [{ x0: 60, y0: 700, x1: 360, y1: 700 }, { x0: 60, y0: 722, x1: 360, y1: 722 }, { x0: 60, y0: 700, x1: 60, y1: 722 }, { x0: 360, y0: 700, x1: 360, y1: 722 }], page: { width: 595, height: 842 } });
   assert.equal(boxed.length, 1); assert.equal(boxed[0].name, 'Firma'); assert.ok(boxed[0].rect[0] > 96 && boxed[0].rect[2] < 360);
 
+  // Letter-spaced labels arrive as single letters: "F U L L  N A M E" becomes "FULL NAME", also before a writing line.
+  const spaced = (s, x0, y, adv = 7, track = 2.5) => { const out = []; let x = x0; for (const ch of s) { if (ch === ' ') { x += 3 + track; continue; } out.push(w(ch, x, y, adv)); x += adv + track; } return out; };
+  assert.equal(formdetect.joinWords(spaced('FULL NAME', 60, 700)), 'FULL NAME');
+  assert.equal(formdetect.joinWords([...spaced('E-MAIL', 60, 700).slice(0, 1), w('Phone', 80, 700, 30)]), 'E Phone', 'single letters only join in runs of three');
+  assert.equal(formdetect.joinWords([w('Name', 60, 700, 30), w('und', 94, 700, 20), w('a', 118, 700, 6), w('b', 128, 700, 6)]), 'Name und a b');
+  const onLine = formdetect.detectFields({ words: spaced('FULL NAME:', 60, 700), lines: [{ x0: 160, y0: 698, x1: 400, y1: 698 }], page: { width: 595, height: 842 } });
+  assert.deepEqual(onLine.map((x) => `${x.type}:${x.name}`), ['text:FULL NAME']);
+
   // Scanned form: lines from the image. A box and a writing line in a grayscale image.
   const W = 400; const H = 200; const gimg = new Uint8Array(W * H).fill(255);
   const hline = (x0, x1, y, t = 2) => { for (let yy = y; yy < y + t; yy++) for (let x = x0; x < x1; x++) gimg[yy * W + x] = 30; };
@@ -1429,6 +1484,498 @@ test('Text operators: copied exactly elsewhere, removed without moving the text 
   assert.deepEqual(hello.color.map((v) => Math.round(v * 10) / 10), [0, 0.4, 0.8]);
 });
 
+test('Edit text: what is left of removed text is no text; a part of an editor block is removed alone', async () => {
+  const d = await PDFDocument.create(); const f = await d.embedFont(StandardFonts.Helvetica);
+  const p = d.addPage([595, 842]);
+  p.node.set(PDFName.of('Resources'), d.context.obj({ Font: { F1: f.ref } }));
+  const shift = (-f.widthOfTextAtSize('First line', 1000)).toFixed(3);
+  const raw = `BT /F1 10 Tf 1 0 0 1 72 700 Tm [${shift}] TJ ET /${content.EDIT_TAG} <</Id (e1)>> BDC BT /F1 10 Tf 1 0 0 1 72 700 Tm (First line) Tj ET BT /F1 10 Tf 1 0 0 1 72 686 Tm (Second line) Tj ET EMC`;
+  p.node.set(PDFName.of('Contents'), d.context.register(d.context.flateStream(Buffer.from(raw, 'latin1'))));
+  const b = await d.save();
+  const r = content.interpret((await PDFDocument.load(b)).getPage(0));
+  const texts = r.items.filter((it) => it.kind === 'text');
+  assert.deepEqual(texts.map((it) => [it.mark, it.empty]), [[null, true], ['e1', false], ['e1', false]], 'a shift without glyphs is empty');
+  // Only the first line lies in the rectangle: only it belongs to the block, the rest of the editor block stays.
+  const first = [70, 696, 200, 712];
+  assert.deepEqual(content.blockTextItems(r, first, 'e1'), [texts[1]]);
+  let d2 = await ops.loadDoc(b);
+  assert.equal(content.removeTextInPage(d2.getPage(0), [first], { mark: 'e1' }), 1);
+  let tx = await textOf(await open(await ops.saveDoc(d2)), 1);
+  assert.match(tx, /Second line/); assert.doesNotMatch(tx, /First line/);
+  // The whole block: removed together with its marker.
+  d2 = await ops.loadDoc(b);
+  assert.equal(content.removeTextInPage(d2.getPage(0), [[70, 680, 200, 712]], { mark: 'e1' }), 2);
+  assert.ok(!content.interpret(d2.getPage(0)).spans.some((s) => s.id === 'e1'), 'marker removed');
+  tx = await textOf(await open(await ops.saveDoc(d2)), 1);
+  assert.doesNotMatch(tx, /line/);
+});
+
+test('Edit text: parts keep bold labels and regular values; the input field tidies its rows', async () => {
+  const bold = { family: 'Arial', bold: true, italic: false, size: 9, color: [0, 0, 0] };
+  const reg = { ...bold, bold: false };
+  const line = (y, text, parts, cells) => {
+    for (const c of cells) c.style = parts[c.first].style;
+    return { y, text, x0: parts[0].x0, x1: parts[parts.length - 1].x1, size: 9, parts, cells };
+  };
+  // A bold label with its value right after it (one column), and a label with its value in a second column.
+  const l1 = line(700, 'Customer no.: 4711', [{ at: 0, x0: 72, x1: 130, size: 9, str: 'Customer no.:', style: bold }, { at: 14, x0: 133, x1: 152, size: 9, str: '4711', style: reg }],
+    [{ first: 0, last: 1, x0: 72, x1: 152, start: 0, end: 18 }]);
+  const l2 = line(689, 'Street Example Road 5', [{ at: 0, x0: 72, x1: 98, size: 9, str: 'Street', style: bold }, { at: 7, x0: 190, x1: 255, size: 9, str: 'Example Road 5', style: reg }],
+    [{ first: 0, last: 0, x0: 72, x1: 98, start: 0, end: 6 }, { first: 1, last: 1, x0: 190, x1: 255, start: 7, end: 21 }]);
+  const view = (runs) => runs.map((c) => [c.text, c.x, c.style.bold]);
+  assert.deepEqual(view(rich.lineRuns(l1)), [['Customer no.: ', 72, true], ['4711', null, false]]);
+  assert.deepEqual(view(rich.lineRuns(l2)), [['Street ', 72, true], ['Example Road 5', 190, false]]);
+  // A changed value keeps the place and weight of its part; the other parts stay as they were (to be copied).
+  const rows = rich.cellLayout([l1, l2], ['Customer no.: 4712', 'Street Example Road 5'], 11);
+  assert.deepEqual(rows[0].cells.map((c) => [...view([c])[0], !!c.src]), [['Customer no.: ', 72, true, true], ['4712', null, false, false]]);
+  assert.deepEqual(rows[1].cells.map((c) => [...view([c])[0], !!c.src]), [['Street ', 72, true, true], ['Example Road 5', 190, false, true]]);
+  // A new line follows the line above, the lines below move down.
+  assert.deepEqual(rich.cellLayout([l1, l2], ['Customer no.: 4711', 'New line', 'Street Example Road 5'], 11).map((r) => r.y), [700, 689, 678]);
+  // Input field: an emptied column passes its place on to the text after it; parts in the same style join.
+  const row = rich.normalizeRow({ y: 0, x0: 72, cells: [{ text: 'Name ', x: 72, style: bold }, { text: '', x: 190, style: reg }, { text: 'Muster', x: null, style: reg }, { text: ' Anna', x: null, style: reg }] });
+  assert.deepEqual(row.cells.map((c) => [c.text, c.x]), [['Name ', 72], ['Muster Anna', 190]]);
+  const caret = [{ k: 2, off: 0 }];
+  rich.normalizeRow({ y: 0, x0: 72, cells: [{ text: 'A', x: 72, style: bold }, { text: 'B', x: null, style: reg }, { text: '', x: null, style: bold }] }, caret);
+  assert.deepEqual(caret, [{ k: 2, off: 0 }], 'an empty part with the caret in it stays');
+  assert.ok(rich.sameStyle(reg, { ...reg, size: 9.2 }) && !rich.sameStyle(reg, bold));
+});
+
+test('Reverse pages and set page boxes', async () => {
+  const b = await fixture(5);
+  const rev = await ops.reversePages(b, [1, 2, 3]);
+  assert.deepEqual(rev.pageMap, [0, 3, 2, 1, 4], 'only the chosen pages change places');
+  const pdf = await open(rev.bytes);
+  const firstLine = async (n) => (await textOf(pdf, n)).match(/Page (\d)/)[1];
+  assert.deepEqual([await firstLine(1), await firstLine(2), await firstLine(4), await firstLine(5)], ['1', '4', '2', '5']);
+  assert.throws(() => boxes.reversedOrder(5, [2]), /at least two pages/);
+  // Trim box from margins, bleed box as a rectangle (clipped to the media box), then the trim box removed again.
+  let c = await ops.setPageBox(b, [0, 1], 'TrimBox', { margins: [10, 20, 30, 40] });
+  c = await ops.setPageBox(c, [0], 'BleedBox', { rect: [-50, 5, 590, 837] });
+  let r = await ops.readPageBoxes(c, 0);
+  assert.deepEqual(r.boxes.TrimBox, [10, 20, 565, 802]);
+  assert.deepEqual(r.boxes.BleedBox, [0, 5, 590, 837], 'clipped to the media box');
+  assert.ok(r.own.TrimBox && !r.own.ArtBox);
+  assert.deepEqual(r.boxes.ArtBox, r.boxes.CropBox, 'a box that is not set is its parent box');
+  assert.deepEqual((await ops.readPageBoxes(c, 2)).own.TrimBox, false, 'other pages stay');
+  c = await ops.setPageBox(c, [0], 'TrimBox', { remove: true });
+  r = await ops.readPageBoxes(c, 0);
+  assert.ok(!r.own.TrimBox); assert.deepEqual(r.boxes.TrimBox, r.boxes.CropBox);
+  // The crop box changes what is shown.
+  c = await ops.setPageBox(c, [0], 'CropBox', { margins: [0, 0, 95, 42] });
+  assert.deepEqual((await (await open(c)).getPage(1)).view, [0, 0, 500, 800]);
+  await assert.rejects(() => ops.setPageBox(c, [0], 'MediaBox', { remove: true }), /cannot be removed/);
+  await assert.rejects(() => ops.setPageBox(c, [0], 'TrimBox', { margins: [300, 0, 300, 0] }), /smaller than a point/);
+});
+test('Export all images: JPEG unchanged, others as PNG with transparency, each once, also inside forms', async () => {
+  const d = await PDFDocument.create();
+  const ctx = d.context;
+  // A 2x2 RGBA image: pdf-lib stores it as RGB with a soft mask.
+  const rgba = Uint8Array.from([255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 0, 255, 255, 255, 255]);
+  const png = await d.embedPng(images.encodePng(ctx, 2, 2, 4, rgba));
+  const fakeJpeg = Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4, 0xff, 0xd9]);
+  const jpegRef = ctx.register(ctx.stream(fakeJpeg, { Type: 'XObject', Subtype: 'Image', Width: 4, Height: 3, ColorSpace: 'DeviceRGB', BitsPerComponent: 8, Filter: 'DCTDecode' }));
+  const indexed = ctx.register(ctx.flateStream(Uint8Array.from([0, 1]), { Type: 'XObject', Subtype: 'Image', Width: 2, Height: 1, BitsPerComponent: 8, ColorSpace: ctx.obj([PDFName.of('Indexed'), PDFName.of('DeviceRGB'), 1, PDFHexString.of('ff000000ff00')]) }));
+  const fax = ctx.register(ctx.stream(Uint8Array.from([0, 0]), { Type: 'XObject', Subtype: 'Image', Width: 8, Height: 8, BitsPerComponent: 1, ColorSpace: 'DeviceGray', Filter: 'CCITTFaxDecode' }));
+  const p1 = d.addPage([200, 200]); p1.drawImage(png, { x: 10, y: 10, width: 50, height: 50 });
+  p1.node.Resources().lookup(PDFName.of('XObject'), PDFDict).set(PDFName.of('J1'), jpegRef);
+  const p2 = d.addPage([200, 200]); p2.drawImage(png, { x: 10, y: 10, width: 80, height: 80 });
+  const xo2 = p2.node.Resources().lookup(PDFName.of('XObject'), PDFDict); xo2.set(PDFName.of('I1'), indexed); xo2.set(PDFName.of('F1'), fax);
+  // Page 3 draws page 1 as a form XObject: its images are found inside the form, but exported only once.
+  const [emb] = await d.embedPages([p1]);
+  d.addPage([200, 200]).drawPage(emb, { x: 0, y: 0 });
+  const doc = await PDFDocument.load(await d.save());
+  const list = images.listImages(doc);
+  assert.equal(list.length, 4, 'the soft mask is not an image of its own; the shared image counts once');
+  const res = await images.exportImages(doc, doc.getPageIndices());
+  assert.equal(res.images.length, 3); assert.equal(res.skipped.length, 1);
+  assert.match(res.skipped[0].reason, /CCITTFax/);
+  const jpg = res.images.find((x) => x.ext === 'jpg');
+  assert.deepEqual([...jpg.data], [...fakeJpeg], 'the JPEG file is written unchanged');
+  const pngs = res.images.filter((x) => x.ext === 'png');
+  const pixels = (file) => {
+    const dv = new DataView(file.buffer, file.byteOffset);
+    const w = dv.getUint32(16); const h = dv.getUint32(20); const type = file[25];
+    const idat = []; for (let o = 8; o < file.length;) { const len = dv.getUint32(o); const t = String.fromCharCode(...file.subarray(o + 4, o + 8)); if (t === 'IDAT') idat.push(file.subarray(o + 8, o + 8 + len)); o += 12 + len; }
+    const raw = zlib.inflateSync(Buffer.concat(idat)); const ch = { 0: 1, 2: 3, 4: 2, 6: 4 }[type]; const out = [];
+    for (let y = 0; y < h; y++) out.push(...raw.subarray(y * (w * ch + 1) + 1, (y + 1) * (w * ch + 1)));
+    return { w, h, type, data: out };
+  };
+  const withAlpha = pixels(pngs.find((x) => x.width === 2 && x.height === 2).data);
+  assert.equal(withAlpha.type, 6, 'RGBA');
+  assert.deepEqual(withAlpha.data, [...rgba], 'colours and transparency as in the original');
+  const idx = pixels(pngs.find((x) => x.width === 2 && x.height === 1).data);
+  assert.deepEqual(idx.data, [255, 0, 0, 0, 255, 0], 'indexed colours looked up');
+});
+test('Export as Markdown: headings from the size, bold and italic, lists, tables, joined lines', async () => {
+  const T = (text, size = 11, o = {}) => ({ kind: 'text', text, size, ...o });
+  const pages = [{ blocks: [T('Annual report', 22), T('Introduction', 14), T('This is the first para-\ngraph, with text that wraps\nover lines.'), T('Summary', 11, { bold: true }), T('An *important* note.', 11, { italic: true }), T('• first point'),
+    { kind: 'table', rows: 2, cols: 2, cells: [{ r: 0, c: 0, text: 'Item' }, { r: 0, c: 1, text: 'Price' }, { r: 1, c: 0, text: 'Pen | blue' }, { r: 1, c: 1, text: '2.50' }] }] },
+  { blocks: [T('More body text on page two that is long enough to count as the body size of this document.')] }];
+  assert.equal(markdown.bodySize(pages), 11);
+  const md = markdown.markdownFrom(pages);
+  assert.match(md, /^# Annual report$/m);
+  assert.match(md, /^## Introduction$/m);
+  assert.match(md, /^## Summary$/m, 'a short bold line is a heading');
+  assert.match(md, /^This is the first paragraph, with text that wraps over lines\.$/m, 'wrapped lines joined, hyphen removed');
+  assert.match(md, /^\*An \\\*important\\\* note\.\*$/m, 'italic, with the asterisks of the text escaped');
+  assert.match(md, /^- first point$/m);
+  assert.match(md, /^\| Item \| Price \|\n\| --- \| --- \|\n\| Pen \\\| blue \| 2\.50 \|$/m);
+});
+test('Print layouts: scaling, several pages per sheet, booklet, form fields only', async () => {
+  const A4 = [595.28, 841.89]; const portrait = [595, 842]; const landscape = [842, 595];
+  const sizes = [portrait, portrait, portrait, landscape, portrait, portrait];
+  const scaleOf = (pl) => Math.round(Math.hypot(pl.matrix[0], pl.matrix[1]) * 1000) / 1000;
+  const one = (o) => imposition.layoutSheets(sizes, [0], { paper: A4, ...o })[0];
+  assert.equal(scaleOf(one({ size: 'actual' }).placed[0]), 1);
+  assert.equal(scaleOf(one({ size: 'custom', scale: 50 }).placed[0]), 0.5);
+  assert.ok(scaleOf(one({ size: 'fit' }).placed[0]) < 1, 'fit keeps the printer margin');
+  assert.equal(scaleOf(imposition.layoutSheets([[200, 300]], [0], { paper: A4, size: 'shrink' })[0].placed[0]), 1, 'small pages are not enlarged');
+  assert.deepEqual(imposition.layoutSheets(sizes, [3], { paper: A4 })[0].size, [841.89, 595.28], 'a landscape page gets a landscape sheet');
+  // 4 per sheet: 6 pages on two sheets, row by row; borders around the pages; the landscape page is turned.
+  const four = imposition.layoutSheets(sizes, [0, 1, 2, 3, 4, 5], { paper: A4, layout: 'multiple', perSheet: 4, border: true });
+  assert.deepEqual(imposition.sheetPages(four), [[0, 1, 2, 3], [4, 5]]);
+  const box = (pl) => imposition.placedBox(pl);
+  const [b0, b1, b2] = four[0].placed.map(box);
+  assert.ok(b1[0] > b0[2] && Math.abs(b1[1] - b0[1]) < 1, 'page 2 to the right of page 1');
+  assert.ok(b2[3] < b0[1], 'page 3 below page 1');
+  assert.equal(four[0].borders.length, 4);
+  assert.ok(four[0].placed[3].matrix[0] === 0, 'the landscape page is turned to fit the portrait cell');
+  const vert = imposition.layoutSheets(sizes, [0, 1, 2], { paper: A4, layout: 'multiple', perSheet: 4, order: 'vertical' });
+  const [v0, v1] = vert[0].placed.map(box);
+  assert.ok(v1[3] < v0[1] && Math.abs(v1[0] - v0[0]) < 1, 'vertical order: page 2 below page 1');
+  // 2 per sheet on portrait pages: side by side on a landscape sheet.
+  const two = imposition.layoutSheets(sizes, [0, 1], { paper: A4, layout: 'multiple', perSheet: 2 });
+  assert.ok(two[0].size[0] > two[0].size[1]);
+  // Booklet: 6 pages padded to 8, two sheets printed on both sides; bound on the right swaps the halves.
+  const book = imposition.layoutSheets(sizes, [0, 1, 2, 3, 4, 5], { paper: A4, layout: 'booklet' });
+  assert.deepEqual(imposition.sheetPages(book), [[0], [1], [5, 2], [3, 4]]);
+  assert.ok(box(book[0].placed[0])[0] > book[0].size[0] / 2, 'the first page is on the right half of the outer sheet');
+  assert.deepEqual(imposition.sheetPages(imposition.layoutSheets(sizes, [0, 1, 2, 3], { paper: A4, layout: 'booklet', binding: 'right' })), [[0, 3], [2, 1]]);
+  assert.deepEqual(imposition.sheetPages(imposition.layoutSheets(sizes, [0, 1, 2, 3], { paper: A4, layout: 'booklet', subset: 'front' })), [[3, 0]]);
+  // Form fields only: the page content and comments go, the fields stay.
+  const d = await PDFDocument.create();
+  const f = await d.embedFont(StandardFonts.Helvetica);
+  const pg = d.addPage([400, 400]); pg.drawText('Printed label', { x: 20, y: 300, size: 14, font: f });
+  const tf = d.getForm().createTextField('name'); tf.setText('Filled in'); tf.addToPage(pg, { x: 20, y: 200, width: 200, height: 24, font: f });
+  const doc = await PDFDocument.load(await d.save());
+  imposition.keepFormFieldsOnly(doc);
+  const pdf = await open(await doc.save());
+  assert.equal((await textOf(pdf, 1)).trim(), '');
+  const ann = await (await pdf.getPage(1)).getAnnotations();
+  assert.equal(ann.length, 1); assert.equal(ann[0].fieldValue, 'Filled in');
+});
+test('Print production: convert to grayscale, fix hairlines, printer marks', async () => {
+  // Grayscale: RGB and CMYK operators, a colour space resource, an RGB image; the page content stays otherwise.
+  const d = await PDFDocument.create();
+  const f = await d.embedFont(StandardFonts.Helvetica);
+  const ctx = d.context;
+  const pg = d.addPage([300, 300]);
+  pg.drawText('Blue text', { x: 20, y: 250, size: 14, font: f, color: rgb(0, 0, 1) });
+  pg.drawRectangle({ x: 20, y: 150, width: 80, height: 40, color: rgb(0.8, 0.2, 0.1) });
+  const img = ctx.register(ctx.flateStream(Uint8Array.from([255, 0, 0, 0, 0, 255]), { Type: 'XObject', Subtype: 'Image', Width: 2, Height: 1, BitsPerComponent: 8, ColorSpace: 'DeviceRGB' }));
+  pg.node.Resources().lookup(PDFName.of('XObject'), PDFDict).set(PDFName.of('Im1'), img);
+  pg.pushOperators(PDFOperator.of('q'), PDFOperator.of('k', [0, 1, 1, 0].map((v) => PDFNumber.of(v))), PDFOperator.of('re', [10, 10, 20, 20].map((v) => PDFNumber.of(v))), PDFOperator.of('f'), PDFOperator.of('cm', [50, 0, 0, 25, 150, 20].map((v) => PDFNumber.of(v))), PDFOperator.of('Do', [PDFName.of('Im1')]), PDFOperator.of('Q'));
+  const g = await ops.convertToGray(await d.save(), [0]);
+  assert.ok(g.colours >= 3, `colours converted: ${g.colours}`); assert.equal(g.images, 1); assert.equal(g.pages, 1);
+  const pdf = await open(g.bytes);
+  const list = await (await pdf.getPage(1)).getOperatorList();
+  const colours = list.fnArray.map((fn, i) => ([OPS.setFillRGBColor, OPS.setStrokeRGBColor].includes(fn) ? list.argsArray[i][0] : null)).filter(Boolean);
+  assert.ok(colours.length >= 3);
+  for (const c of colours) { const h = typeof c === 'string' ? c : `#${[...c].map((v) => v.toString(16).padStart(2, '0')).join('')}`; assert.ok(h.slice(1, 3) === h.slice(3, 5) && h.slice(3, 5) === h.slice(5, 7), `gray: ${h}`); }
+  assert.match(await textOf(pdf, 1), /Blue text/);
+  const gd = await PDFDocument.load(g.bytes);
+  const im = gd.context.lookup(gd.getPage(0).node.Resources().lookup(PDFName.of('XObject'), PDFDict).get(PDFName.of('Im1')));
+  assert.equal(im.dict.get(PDFName.of('ColorSpace')).decodeText(), 'DeviceGray');
+  assert.deepEqual([...decodePDFRawStream(im).decode()], [76, 29], 'red and blue as their luminance');
+  // Hairlines: a zero-width line, a 0.1 pt line, a 1 pt line drawn at a scale of 0.1, and a 2 pt line that stays.
+  const h = await PDFDocument.create();
+  const hp = h.addPage([300, 300]);
+  const raw = (s) => hp.pushOperators(...s.split('\n').map((l) => { const t = l.trim().split(/\s+/); const op = t.pop(); return PDFOperator.of(op, t.map((x) => (/^-?[\d.]+$/.test(x) ? PDFNumber.of(+x) : PDFName.of(x.slice(1))))); }));
+  raw('0 w\n10 10 m\n100 10 l\nS\n0.1 w\n10 20 m\n100 20 l\nS\nq\n0.1 0 0 0.1 0 0 cm\n1 w\n100 300 m\n1000 300 l\nS\nQ\n2 w\n10 40 m\n100 40 l\nS');
+  const fx = await ops.fixHairlines(await h.save(), [0], { narrowerThan: 0.25, width: 0.5 });
+  assert.equal(fx.lines, 3); assert.equal(fx.pages, 1);
+  const hl = await (await (await open(fx.bytes)).getPage(1)).getOperatorList();
+  const widths = hl.fnArray.map((fn, i) => (fn === OPS.setLineWidth ? hl.argsArray[i][0] : null)).filter((v) => v !== null);
+  assert.ok(widths.includes(0.5) && widths.includes(5), `new widths: ${widths}`);
+  assert.ok(widths.includes(2), 'the 2 pt line keeps its width');
+  // Printer marks: the page grows, the trim box stays where the page was; the marks are a page mark.
+  const pm = await ops.addPrinterMarks(await fixture(2), [0, 1], { trim: true, bleed: true, registration: true, colorBars: true, pageInfo: true, label: 'test.pdf', lineWeight: 0.25 });
+  assert.deepEqual(pm.widened, [0, 1]);
+  const md = await PDFDocument.load(pm.bytes);
+  const t = md.getPage(0).getTrimBox();
+  assert.deepEqual([t.x, t.y, t.width, t.height], [0, 0, 595, 842]);
+  assert.ok(md.getPage(0).getMediaBox().width > 595 + 60);
+  assert.match(await textOf(await open(pm.bytes), 2), /test\.pdf +2 of 2/);
+  assert.deepEqual((await ops.listMarks(pm.bytes)).map((m) => m.kind), ['PrinterMarks']);
+  const rm = await ops.removeMarks(pm.bytes, 'PrinterMarks');
+  assert.doesNotMatch(await textOf(await open(rm.bytes), 1), /of 2/);
+});
+test('Measure: snap to endpoints, midpoints, intersections and lines, also in forms; measurements as CSV', async () => {
+  const d = await PDFDocument.create();
+  const p = d.addPage([400, 400]);
+  p.drawRectangle({ x: 100, y: 100, width: 200, height: 100, borderColor: rgb(0, 0, 0), borderWidth: 1 });
+  p.drawLine({ start: { x: 50, y: 130 }, end: { x: 350, y: 130 }, thickness: 1 });
+  // A page drawn as a form at half size, moved: its rectangle corner (100, 100) ends up at (50 + 50, 300 + 50).
+  const src = d.addPage([400, 400]); src.drawRectangle({ x: 100, y: 100, width: 40, height: 40, borderColor: rgb(0, 0, 0), borderWidth: 1 });
+  const [emb] = await d.embedPages([src]);
+  p.drawPage(emb, { x: 50, y: 300, xScale: 0.5, yScale: 0.5 });
+  const doc = await PDFDocument.load(await d.save());
+  const g = snap.pageGeometry(doc.getPage(0));
+  assert.ok(g.segs.length >= 9 && !g.truncated);
+  const near = (q, kind, x, y) => { assert.ok(q, `snap for ${kind}`); assert.equal(q.kind, kind); assert.ok(Math.abs(q.point[0] - x) < 0.01 && Math.abs(q.point[1] - y) < 0.01, `${kind} at ${q.point}`); };
+  near(snap.snapPoint(g, [103, 98], 6), 'endpoint', 100, 100);
+  near(snap.snapPoint(g, [201, 203], 6), 'midpoint', 200, 200);
+  near(snap.snapPoint(g, [102, 132], 6), 'intersection', 100, 130);
+  near(snap.snapPoint(g, [250, 104], 6), 'path', 250, 100);
+  near(snap.snapPoint(g, [101, 351], 6), 'endpoint', 100, 350);
+  assert.equal(snap.snapPoint(g, [20, 20], 6), null, 'nothing nearby');
+  assert.equal(snap.snapPoint(g, [103, 98], 6, { endpoints: false, midpoints: false, intersections: false }).kind, 'path');
+  const csv = snap.measurementsCsv([{ page: 0, index: 0, type: 'distance', value: 77.6, unit: 'mm', label: 'Distance: 77.6 mm', author: '=cmd' }]);
+  assert.equal(csv, 'Page,Index,Type,Value,Unit,Label,Author\r\n1,1,distance,77.6,"mm","Distance: 77.6 mm","\'=cmd"\r\n');
+  assert.deepEqual(snap.parseMeasurement('Distance: 1,234.5 mm'), { value: 1234.5, unit: 'mm' });
+  assert.deepEqual(snap.parseMeasurement('12.5 m²'), { value: 12.5, unit: 'm²' });
+});
+test('Document properties: fonts with type and embedding, also in forms and comment appearances', async () => {
+  const d = await PDFDocument.create(); d.registerFontkit(fontkit);
+  const helv = await d.embedFont(StandardFonts.Helvetica);
+  const lib = await d.embedFont(fs.readFileSync('node_modules/pdfjs-dist/standard_fonts/LiberationSans-Regular.ttf'), { subset: true });
+  const p1 = d.addPage([300, 300]); p1.drawText('Standard font', { x: 10, y: 250, size: 12, font: helv });
+  const src = d.addPage([300, 300]); src.drawText('Embedded subset', { x: 10, y: 250, size: 12, font: lib });
+  const [emb] = await d.embedPages([src]);
+  p1.drawPage(emb, { x: 0, y: 0, xScale: 0.3, yScale: 0.3 });
+  const tf = d.getForm().createTextField('f1'); tf.addToPage(p1, { x: 10, y: 100, width: 100, height: 20 });
+  d.removePage(1);
+  const doc = await PDFDocument.load(await d.save());
+  const fonts = docfonts.listFonts(doc);
+  const by = (re) => fonts.find((f) => re.test(f.name));
+  assert.equal(by(/^Helvetica$/).embedded, false);
+  const l = by(/LiberationSans/);
+  assert.ok(l && l.embedded && l.kind === 'Type0', `the font inside the drawn page: ${JSON.stringify(fonts)}`);
+  assert.deepEqual(l.pages, [0]);
+  assert.equal(docfonts.fontKind('TrueType'), 'TrueType');
+});
+test('Accessibility: auto-tag headings, paragraphs, figures, artifacts, form fields and links; alternate text; check report', async () => {
+  const d = await PDFDocument.create();
+  const f = await d.embedFont(StandardFonts.Helvetica); const fb = await d.embedFont(StandardFonts.HelveticaBold);
+  const png = await d.embedPng(PNG);
+  const p = d.addPage([595, 842]);
+  p.drawText('Annual report', { x: 72, y: 760, size: 24, font: fb });
+  p.drawText('Summary', { x: 72, y: 720, size: 15, font: f });
+  for (let k = 0; k < 4; k++) p.drawText(`Body text line ${k + 1} with enough words to count as the body of the page.`, { x: 72, y: 690 - k * 16, size: 11, font: f });
+  p.drawRectangle({ x: 72, y: 500, width: 200, height: 4, color: rgb(0.5, 0.5, 0.5) });
+  p.drawImage(png, { x: 72, y: 300, width: 100, height: 100 });
+  const tf = d.getForm().createTextField('email'); tf.addToPage(p, { x: 72, y: 200, width: 200, height: 20, font: f });
+  d.getForm().getTextField('email').acroField.dict.set(PDFName.of('TU'), PDFHexString.fromText('Your email address'));
+  const p2 = d.addPage([595, 842]); p2.drawText('Second page', { x: 72, y: 760, size: 11, font: f });
+  const before = await PDFDocument.load(await d.save());
+  const r0 = a11y.checkReport(before, { pageText: [true, true] });
+  const st = (r, id) => r.find((x) => x.id === id).status;
+  assert.equal(st(r0, 'tagged-pdf'), 'failed'); assert.equal(st(r0, 'tagged-content'), 'failed'); assert.equal(st(r0, 'tagged-fields'), 'failed');
+  assert.equal(st(r0, 'reading-order'), 'manual');
+  // Auto-tag.
+  const res = a11y.autoTag(before);
+  assert.deepEqual({ h: res.headings, p: res.paragraphs, fig: res.figures, fields: res.fields }, { h: 2, p: 5, fig: 1, fields: 1 });
+  assert.ok(res.artifacts >= 1, 'the rule is decoration');
+  const tagged = await PDFDocument.load(await before.save());
+  const tree = a11y.readTags(tagged);
+  assert.equal(tree[0].type, 'Document');
+  const types = tree[0].children.map((n) => n.type);
+  assert.deepEqual(types.slice(0, 3), ['H1', 'H2', 'P']);
+  assert.ok(types.includes('Figure') && types.includes('Form'));
+  const form = a11y.findTags(tree, (n) => n.type === 'Form')[0];
+  assert.equal(form.alt, 'Your email address', 'the field is described by its tooltip');
+  assert.equal(form.annots, 1);
+  // PDF.js reads the same structure.
+  const pdf = await open(await tagged.save());
+  const stree = await (await pdf.getPage(1)).getStructTree();
+  const roles = []; const walk = (n) => { if (n.role) roles.push(n.role); (n.children || []).forEach(walk); }; walk(stree);
+  assert.ok(roles.includes('H1') && roles.includes('Figure') && roles.includes('P'), `PDF.js roles: ${roles}`);
+  assert.match(await textOf(pdf, 1), /Annual report/, 'the text stays');
+  // Alternate text and retagging.
+  const fig = a11y.findTags(tree, (n) => n.type === 'Figure')[0];
+  let r1 = a11y.checkReport(tagged, { pageText: [true, true] });
+  assert.equal(st(r1, 'tagged-pdf'), 'passed'); assert.equal(st(r1, 'tagged-content'), 'passed', r1.find((x) => x.id === 'tagged-content').detail);
+  assert.equal(st(r1, 'tagged-fields'), 'passed'); assert.equal(st(r1, 'field-descriptions'), 'passed'); assert.equal(st(r1, 'tab-order'), 'passed');
+  assert.equal(st(r1, 'figures-alt'), 'failed'); assert.equal(st(r1, 'heading-nesting'), 'passed');
+  a11y.setAlt(tagged, fig.ref, 'Company logo');
+  a11y.retag(tagged, tree[0].children[1].ref, 'H3');
+  r1 = a11y.checkReport(tagged, { pageText: [true, true] });
+  assert.equal(st(r1, 'figures-alt'), 'passed'); assert.equal(st(r1, 'heading-nesting'), 'failed', 'H1 then H3 skips a level');
+  assert.equal(st(r1, 'language'), 'failed'); assert.equal(st(r1, 'title'), 'failed');
+  tagged.setTitle('Annual report'); tagged.setLanguage('en-GB'); a11y.fixSimple(tagged);
+  r1 = a11y.checkReport(tagged, { pageText: [true, true] });
+  assert.equal(st(r1, 'language'), 'passed'); assert.equal(st(r1, 'title'), 'passed');
+  assert.throws(() => a11y.autoTag(tagged), /already tagged/);
+  // A field added later is tagged on its own.
+  const tf2 = tagged.getForm().createTextField('phone'); tf2.addToPage(tagged.getPage(1), { x: 72, y: 600, width: 200, height: 20 });
+  assert.deepEqual(a11y.tagFormFields(tagged), { fields: 1, links: 0 });
+  assert.equal(st(a11y.checkReport(tagged, { pageText: [true, true] }), 'tagged-fields'), 'passed');
+  assert.equal(st(a11y.checkReport(tagged, { pageText: [false, false] }), 'image-only'), 'failed');
+});
+test('Enhance scans: even lighting, black and white, specks; phone photos: find the sheet and straighten it', async () => {
+  // A page with a shadow from left to right, dark strokes and isolated specks.
+  const w = 200; const h = 160;
+  const img = { width: w, height: h, data: new Uint8ClampedArray(w * h * 4) };
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const paper = 140 + (x / w) * 110; // 140 at the left edge, 250 at the right
+    const stroke = (y % 20 < 3) && x > 20 && x < 180;
+    const v = stroke ? paper * 0.25 : paper;
+    const i = (y * w + x) * 4; img.data[i] = img.data[i + 1] = img.data[i + 2] = v; img.data[i + 3] = 255;
+  }
+  for (const [x, y] of [[50, 10], [120, 75], [160, 115]]) { const i = (y * w + x) * 4; img.data[i] = img.data[i + 1] = img.data[i + 2] = 0; }
+  const clean = scanfix.enhanceImage(img, { mode: 'clean' });
+  const px = (im, x, y) => im.data[(y * w + x) * 4];
+  assert.ok(px(clean, 5, 10) > 235 && px(clean, 195, 10) > 235, `paper white on both sides: ${px(clean, 5, 10)}, ${px(clean, 195, 10)}`);
+  assert.ok(px(clean, 30, 1) < 90 && px(clean, 170, 1) < 90, 'strokes stay dark');
+  assert.ok(px(clean, 50, 10) > 200, 'an isolated speck is removed');
+  const bw = scanfix.enhanceImage(img, { mode: 'bw' });
+  const values = new Set(); for (let i = 0; i < w * h; i++) values.add(bw.data[i * 4]);
+  assert.deepEqual([...values].sort((a, b) => a - b), [0, 255], 'only black and white');
+  assert.equal(px(bw, 100, 1), 0); assert.equal(px(bw, 100, 10), 255); assert.equal(px(bw, 120, 75), 255, 'speck gone');
+  // Perspective: a white sheet with a dark border on a grey table, photographed at an angle.
+  const W = 400; const H = 300;
+  const photo = { width: W, height: H, data: new Uint8ClampedArray(W * H * 4) };
+  const corners = [[70, 40], [330, 60], [350, 260], [50, 240]];
+  const H0 = scanfix.homography([[0, 0], [1, 0], [1, 1], [0, 1]], corners);
+  const inv = scanfix.homography(corners, [[0, 0], [1, 0], [1, 1], [0, 1]]);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const [u, v] = scanfix.applyH(inv, [x + 0.5, y + 0.5]);
+    const inside = u >= 0 && u <= 1 && v >= 0 && v <= 1;
+    const text = inside && v > 0.3 && v < 0.33 && u > 0.1 && u < 0.9;
+    const c = !inside ? 90 : text ? 20 : 245;
+    const i = (y * W + x) * 4; photo.data[i] = photo.data[i + 1] = photo.data[i + 2] = c; photo.data[i + 3] = 255;
+  }
+  assert.ok(scanfix.applyH(H0, [1, 1]).every((v, k) => Math.abs(v - corners[2][k]) < 1e-6), 'homography maps the corners');
+  const found = scanfix.detectDocument(photo);
+  assert.ok(found, 'the sheet is found');
+  found.forEach((p, k) => assert.ok(Math.hypot(p[0] - corners[k][0], p[1] - corners[k][1]) < 6, `corner ${k}: ${p} near ${corners[k]}`));
+  const flat = scanfix.warp(photo, found);
+  assert.ok(Math.abs(flat.width - 300) < 12 && Math.abs(flat.height - 203) < 12, `straightened size ${flat.width} x ${flat.height}`);
+  // The text line is level after straightening: as dark at both ends.
+  const row = Math.round(flat.height * 0.315);
+  const dark = (x) => flat.data[(row * flat.width + x) * 4] < 100;
+  assert.ok(dark(Math.round(flat.width * 0.15)) && dark(Math.round(flat.width * 0.85)), 'the line is horizontal');
+  assert.equal(scanfix.detectDocument({ width: 100, height: 100, data: new Uint8ClampedArray(40000).fill(128) }), null, 'nothing found on a plain picture');
+  assert.equal(scanfix.orderQuad([[0, 0], [10, 0], [5, 0], [0, 10]]), null);
+});
+test('Enhance scanned pages: the scan image is cleaned in place, recognized text and other pages stay', async () => {
+  const d = await PDFDocument.create();
+  const ctx = d.context;
+  const w = 120; const h = 80; const px = new Uint8Array(w * h * 3);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const v = (y % 16 < 2 && x > 10 && x < 110) ? 40 : 150 + x / 2; px.set([v, v, v * 0.95], (y * w + x) * 3); }
+  const ref = ctx.register(ctx.flateStream(px, { Type: 'XObject', Subtype: 'Image', Width: w, Height: h, BitsPerComponent: 8, ColorSpace: 'DeviceRGB' }));
+  const p = d.addPage([300, 200]);
+  p.node.normalizedEntries().XObject.set(PDFName.of('Scan'), ref);
+  p.pushOperators(PDFOperator.of('q'), PDFOperator.of('cm', [300, 0, 0, 200, 0, 0].map((v) => PDFNumber.of(v))), PDFOperator.of('Do', [PDFName.of('Scan')]), PDFOperator.of('Q'));
+  const f = await d.embedFont(StandardFonts.Helvetica);
+  p.drawText('Recognized words', { x: 20, y: 100, size: 10, font: f, renderMode: 3 });
+  const text = d.addPage([300, 200]); text.drawText('A normal page', { x: 20, y: 100, size: 12, font: f });
+  const bytes = await d.save();
+  const res = await ops.enhanceScans(bytes, [0, 1], { mode: 'clean' });
+  assert.deepEqual({ pages: res.pages, images: res.images, left: res.left, notScans: res.notScans }, { pages: 1, images: 1, left: 0, notScans: [1] });
+  const after = await PDFDocument.load(res.bytes);
+  const img = after.context.lookup(ref);
+  assert.ok(img, 'the same image object');
+  const data = decodePDFRawStream(img).decode();
+  assert.ok(data[(5 * w + 5) * 3] > 235 && data[(5 * w + 115) * 3] > 235, 'the paper is white on both sides');
+  assert.ok(data[(1 * w + 60) * 3] < 90, 'the strokes stay dark');
+  assert.match(await textOf(await open(res.bytes), 1), /Recognized words/, 'the recognized text stays');
+  const bw = await ops.enhanceScans(bytes, [0], { mode: 'bw' });
+  const img2 = (await PDFDocument.load(bw.bytes)).context.lookup(ref);
+  assert.equal(img2.dict.get(PDFName.of('BitsPerComponent')).asNumber(), 1);
+  assert.equal(img2.dict.get(PDFName.of('ColorSpace')).decodeText(), 'DeviceGray');
+  assert.equal((await (await open(bw.bytes)).getPage(1)).view[2], 300);
+});
+test('XFA forms: dynamic forms become pages and form fields with their data; static forms lose only the XFA', async () => {
+  assert.equal(xfa.measure('1in'), 72); assert.equal(xfa.measure('25.4mm'), 72); assert.equal(xfa.measure('10'), 10); assert.equal(xfa.measure('2em'), null);
+  const x = xml.parseXml('<?xml version="1.0"?><!-- c --><a:root xmlns:a="u" k="v &amp; w"><b>one</b><![CDATA[<raw>]]><c/></a:root>');
+  assert.equal(x.local, 'root'); assert.equal(x.attrs.k, 'v & w'); assert.equal(xml.textContent(x), 'one<raw>'); assert.equal(xml.kids(x).length, 2);
+  const template = `<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/"><subform name="form1" layout="tb" locale="en_GB">
+    <pageSet><pageArea name="Page1"><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><medium stock="letter" short="8.5in" long="11in"/></pageArea></pageSet>
+    <subform name="head" layout="position" w="7.5in" h="1in">
+      <draw name="Title" x="0" y="0" w="5in" h="0.4in"><value><text>Application form</text></value><font typeface="Arial" size="16pt" weight="bold"/></draw>
+      <draw name="Rule" x="0" y="0.5in" w="7.5in" h="0"><value><line/></value></draw>
+    </subform>
+    <subform name="person" layout="position" w="7.5in" h="2in">
+      <field name="Name" x="0" y="0" w="4in" h="0.3in"><ui><textEdit/></ui><caption reserve="1in"><value><text>Full name</text></value></caption><assist><toolTip>Your full name</toolTip></assist></field>
+      <field name="Agree" x="0" y="0.5in" w="3in" h="0.3in"><ui><checkButton/></ui><caption><value><text>I agree</text></value></caption><items><integer>1</integer><integer>0</integer></items></field>
+      <field name="Country" x="0" y="1in" w="3in" h="0.3in"><ui><choiceList/></ui><items><text>Switzerland</text><text>Germany</text></items><items save="1"><text>CH</text><text>DE</text></items></field>
+      <exclGroup name="Size" x="4in" y="0.5in" layout="tb"><field name="S" w="1in" h="0.25in"><ui><checkButton shape="round"/></ui><items><text>small</text></items><caption><value><text>Small</text></value></caption></field><field name="L" w="1in" h="0.25in"><ui><checkButton shape="round"/></ui><items><text>large</text></items><caption><value><text>Large</text></value></caption></field></exclGroup>
+    </subform>
+    <subform name="Item" layout="lr-tb" w="7.5in"><occur min="1" max="-1"/>
+      <field name="Desc" w="5in" h="0.3in"><ui><textEdit/></ui></field><field name="Qty" w="1in" h="0.3in"><ui><numericEdit/></ui></field>
+    </subform>
+    <subform name="notes" layout="tb" w="7.5in"><break before="pageArea"/>
+      <draw name="Hidden" w="2in" h="0.3in" presence="hidden"><value><text>Never shown</text></value></draw>
+      <field name="Remarks" w="7.5in" h="1in"><ui><textEdit multiLine="1"/></ui><caption placement="top"><value><text>Remarks</text></value></caption></field>
+    </subform>
+  </subform></template>`;
+  const datasets = `<xfa:datasets xmlns:xfa="http://www.xfa.org/schema/xfa-data/1.0/"><xfa:data><form1><person><Name>Anna Example</Name><Agree>1</Agree><Country>DE</Country><Size>large</Size></person>
+    <Item><Desc>Pens</Desc><Qty>3</Qty></Item><Item><Desc>Paper</Desc><Qty>10</Qty></Item><Item><Desc>Ink</Desc><Qty>1</Qty></Item><notes><Remarks>Deliver on Monday</Remarks></notes></form1></xfa:data></xfa:datasets>`;
+  const d = await PDFDocument.create();
+  const f = await d.embedFont(StandardFonts.Helvetica);
+  d.addPage([612, 792]).drawText('Please wait... this form needs a viewer that supports it.', { x: 50, y: 700, size: 12, font: f });
+  d.setTitle('Application');
+  const ctx = d.context;
+  const enc = (t) => ctx.register(ctx.flateStream(new TextEncoder().encode(t)));
+  d.catalog.set(PDFName.of('AcroForm'), ctx.obj({ Fields: [], XFA: [PDFString.of('template'), enc(template), PDFString.of('datasets'), enc(datasets)] }));
+  d.catalog.set(PDFName.of('NeedsRendering'), ctx.obj(true));
+  const bytes = await d.save();
+  assert.deepEqual(await ops.xfaInfo(bytes), { isStatic: false });
+  const lay = xfa.layoutXfa(template, datasets);
+  assert.equal(lay.pages.length, 2, 'the break before "notes" starts page 2');
+  const res = await ops.convertXfa(bytes, readFont);
+  assert.equal(res.kind, 'dynamic'); assert.equal(res.pages, 2);
+  const pdf = await open(res.bytes);
+  assert.equal(pdf.numPages, 2);
+  const t1 = await textOf(pdf, 1);
+  assert.match(t1, /Application form/); assert.match(t1, /Full name/); assert.match(t1, /I agree/);
+  assert.doesNotMatch(await textOf(pdf, 2), /Never shown/, 'hidden content is not drawn');
+  const out = await PDFDocument.load(res.bytes);
+  const form = out.getForm();
+  const val = (n) => form.getFields().find((x) => x.getName() === n);
+  assert.equal(val('form1.person.Name').getText(), 'Anna Example');
+  assert.ok(val('form1.person.Agree').isChecked());
+  assert.equal(val('form1.person.Country').getSelected()[0], 'Germany', 'the saved value is shown with its display text');
+  assert.equal(val('form1.person.Size').getSelected(), 'large');
+  assert.deepEqual(form.getFields().filter((x) => /Desc/.test(x.getName())).map((x) => x.getText()), ['Pens', 'Paper', 'Ink'], 'one row per data group');
+  assert.equal(val('form1.notes.Remarks').getText(), 'Deliver on Monday');
+  assert.ok(val('form1.notes.Remarks').isMultiline());
+  assert.equal(out.getTitle(), 'Application');
+  assert.equal(out.catalog.lookup(PDFName.of('AcroForm')).get(PDFName.of('XFA')), undefined);
+  // The name field sits to the right of its caption (reserve 1 in) and has its tooltip.
+  const ann = (await (await pdf.getPage(1)).getAnnotations()).find((a) => a.fieldName === 'form1.person.Name');
+  assert.ok(Math.abs(ann.rect[0] - (36 + 72)) < 1, `field after its caption: ${ann.rect}`);
+  assert.equal(ann.alternativeText, 'Your full name');
+  // A static form: the pages and fields stay, only the XFA goes.
+  const s = await PDFDocument.create();
+  const sp = s.addPage([300, 300]);
+  const tf = s.getForm().createTextField('form1[0].Name[0]'); tf.addToPage(sp, { x: 10, y: 10, width: 100, height: 20 }); tf.setText('kept');
+  s.catalog.lookup(PDFName.of('AcroForm')).set(PDFName.of('XFA'), s.context.obj([PDFString.of('template'), s.context.register(s.context.flateStream(new TextEncoder().encode(template)))]));
+  const sb = await s.save({ updateFieldAppearances: false });
+  assert.deepEqual(await ops.xfaInfo(sb), { isStatic: true });
+  const sr = await ops.convertXfa(sb, readFont);
+  assert.equal(sr.kind, 'static');
+  const so = await PDFDocument.load(sr.bytes);
+  assert.equal(so.getForm().getTextField('form1[0].Name[0]').getText(), 'kept');
+  assert.equal(await ops.xfaInfo(sr.bytes), null);
+});
+test('Accessibility: recognized text of a scan is tagged, page marks stay artifacts', async () => {
+  let b = await fixture(1);
+  b = await ops.addInvisibleText(b, [{ page: 0, words: [{ text: 'Scanned', x: 72, y: 400, width: 60, height: 12, line: 0, par: 0 }, { text: 'words', x: 136, y: 400, width: 40, height: 12, line: 0, par: 0 }], pars: [{ font: 'Arial', tz: 100 }] }], readFont);
+  b = await ops.addHeaderFooter(b, { center: 'Header mark' }, readFont);
+  const d = await PDFDocument.load(b);
+  const res = a11y.autoTag(d);
+  assert.ok(res.paragraphs + res.headings >= 3, `the page text and the recognized words are tagged: ${JSON.stringify(res)}`);
+  const r = a11y.checkReport(d, { pageText: [true] });
+  assert.equal(r.find((x) => x.id === 'tagged-content').status, 'passed', r.find((x) => x.id === 'tagged-content').detail);
+  const pdf = await open(await d.save());
+  const tc = await (await pdf.getPage(1)).getTextContent({ includeMarkedContent: true });
+  const tagged = []; let inMc = 0;
+  for (const it of tc.items) { if (it.type === 'beginMarkedContentProps' && it.id) inMc++; else if (it.type === 'endMarkedContent') inMc = Math.max(0, inMc - 1); else if (it.str && inMc) tagged.push(it.str); }
+  assert.ok(tagged.join(' ').includes('Scanned'), `recognized text inside a tag: ${tagged}`);
+  assert.ok(!tagged.join(' ').includes('Header mark'), 'the header stays an artifact');
+});
 let failed = 0;
 // DP_CORE_ONLY: a regular expression for the names of the tests to run (all when empty).
 const only = process.env.DP_CORE_ONLY ? new RegExp(process.env.DP_CORE_ONLY, 'i') : null;

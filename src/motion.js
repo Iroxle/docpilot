@@ -24,7 +24,7 @@ function tabInk() {
       bar.style.width = `${Math.max(0, right - left)}px`;
       bar.style.transform = `translateX(${left - hr.left}px)`;
       if (first || reduce.matches) { void bar.offsetWidth; bar.style.transition = ''; first = false; }
-    } catch { /* rein optisch */ }
+    } catch { /* purely visual */ }
   };
   let raf = 0;
   const later = () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(place); };

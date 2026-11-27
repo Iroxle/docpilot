@@ -6,6 +6,7 @@ import { interpret } from './pdf/content.js';
 import { pageGraphics } from './pdf/formdetect.js';
 import { detectTables, textRows, parseValue } from './pdf/tables.js';
 import { wordBoxes } from './textutil.js';
+import { markdownFrom } from './pdf/markdown.js';
 
 const hex = (c) => (c || [0, 0, 0]).map((v) => Math.round(v * 255).toString(16).padStart(2, '0')).join('');
 
@@ -229,6 +230,10 @@ export async function toHtml(app, progress) {
 export async function toText(app, progress) {
   const pages = await allPages(app, progress, false);
   return new TextEncoder().encode(pages.map((p) => p.blocks.map((b) => b.text).join('\r\n')).join('\r\n\f\r\n'));
+}
+/** Markdown: paragraphs in reading order, headings from the font size, bold and italic, tables as pipe tables. */
+export async function toMarkdown(app, progress) {
+  return new TextEncoder().encode(markdownFrom(await allPages(app, progress, false, true)));
 }
 const rtfEsc = (s) => [...s].map((c) => { const o = c.codePointAt(0); if (c === '\\' || c === '{' || c === '}') return `\\${c}`; if (o > 126) return o > 65535 ? '?' : `\\u${o > 32767 ? o - 65536 : o}?`; return c; }).join('');
 export async function toRtf(app, progress) {

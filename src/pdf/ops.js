@@ -8,6 +8,12 @@ import {
 } from '@cantoo/pdf-lib';
 import fontkit from '@cantoo/fontkit';
 import * as organize from './organize.js';
+import * as marks from './marks.js';
+import * as boxes from './boxes.js';
+import * as prepress from './prepress.js';
+import * as a11y from './a11y.js';
+import * as scanfix from './scanfix.js';
+import * as xfa from './xfa.js';
 
 export const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
@@ -128,6 +134,19 @@ export function reorderPages(bytes, order) {
     root.set(PDFName.of('Count'), PDFNumber.of(order.length));
     return { pageMap: order.slice() };
   });
+}
+
+/** Reverses the order of the pages idx among the positions they occupy. */
+export async function reversePages(bytes, idx) {
+  const n = (await loadForEdit(bytes)).getPageCount();
+  return reorderPages(bytes, boxes.reversedOrder(n, idx));
+}
+/** Sets or removes a page box (MediaBox, CropBox, BleedBox, TrimBox, ArtBox); spec: {remove} | {rect} | {margins: [l, b, r, t]}. */
+export const setPageBox = (bytes, idx, key, spec) => edit(bytes, (d) => { boxes.setPageBox(d, idx, key, spec); });
+/** The effective boxes of a page (0-based) and which of them the page sets itself. */
+export async function readPageBoxes(bytes, i) {
+  const p = (await loadForEdit(bytes)).getPage(i);
+  return { boxes: boxes.pageBoxes(p), own: Object.fromEntries(boxes.BOXES.map(([k]) => [k, boxes.hasOwnBox(p, k)])) };
 }
 
 export function insertBlank(bytes, at, size) {
@@ -383,16 +402,20 @@ function placeAnchor(pos, W, H, bw, bh, margin) {
   return { x, y };
 }
 
-/** o: {text|image, mime, font, size, color, opacity, rotation, position, margin, scale, behind, pages} */
+/**
+ * o: {text|image, mime, font, size, color, opacity, rotation, position, margin, scale, behind, pages, replace, settings}.
+ * replace: remove the watermarks already there first (Update). settings: the dialog values stored with the mark.
+ */
 export function addWatermark(bytes, o, readFont) {
   return edit(bytes, async (d) => {
+    if (o.replace) marks.removeMarks(d, 'Watermark');
     const pages = o.pages || d.getPageIndices();
     let img = null;
     if (o.image) img = o.mime === 'image/png' ? await d.embedPng(o.image) : await d.embedJpg(o.image);
     const font = o.text ? await getFont(d, o.font || 'Helvetica', { bold: !!o.bold }, o.text, readFont) : null;
     for (const i of pages) {
       const p = d.getPage(i);
-      inDisplaySpace(p, (W, H) => {
+      marks.drawMark(p, 'Watermark', () => inDisplaySpace(p, (W, H) => {
         const a = (o.rotation || 0) * Math.PI / 180;
         const bw = img ? img.width * (o.scale || 1) : font.widthOfTextAtSize(sanitizeFor(font, o.text), o.size || 48);
         const bh = img ? img.height * (o.scale || 1) : font.heightAtSize(o.size || 48, { descender: false });
@@ -402,32 +425,47 @@ export function addWatermark(bytes, o, readFont) {
         const y = cy - (bw / 2) * Math.sin(a) - (bh / 2) * Math.cos(a);
         if (img) p.drawImage(img, { x, y, width: bw, height: bh, rotate: degrees(o.rotation || 0), opacity: o.opacity ?? 0.5 });
         else p.drawText(sanitizeFor(font, o.text), { x, y, size: o.size || 48, font, color: hex(o.color), rotate: degrees(o.rotation || 0), opacity: o.opacity ?? 0.5 });
-      });
+      }), { behind: !!o.behind, settings: o.settings });
     }
   });
 }
 
+/** o: {color, opacity, pages, replace, settings}. The background lies behind the page content. */
 export const addBackground = (bytes, o) => edit(bytes, (d) => {
+  if (o.replace) marks.removeMarks(d, 'Background');
   for (const i of o.pages || d.getPageIndices()) {
     const p = d.getPage(i);
     const { x, y, width, height } = p.getCropBox();
-    const op = [pushGraphicsState()];
-    p.pushOperators(...op);
-    p.drawRectangle({ x, y, width, height, color: hex(o.color), opacity: o.opacity ?? 1 });
-    p.pushOperators(popGraphicsState());
-    // Move the background to the start of the content array so it lies behind the content.
-    const c = p.node.Contents();
-    if (c instanceof PDFArray && c.size() > 1) {
-      const last = c.get(c.size() - 1);
-      c.remove(c.size() - 1);
-      c.insert(0, last);
-    }
+    marks.drawMark(p, 'Background', () => p.drawRectangle({ x, y, width, height, color: hex(o.color), opacity: o.opacity ?? 1 }), { behind: true, settings: o.settings });
   }
 });
 
-/** o: {left,center,right,footLeft,footCenter,footRight,size,color,margin,pages,startNumber} with {page},{pages},{date},{file} */
+/** Print production: convert to grayscale, fix hairlines, printer marks (see prepress.js). */
+export const convertToGray = (bytes, idx, o) => edit(bytes, (d) => prepress.convertToGray(d, idx, o));
+export const fixHairlines = (bytes, idx, h) => edit(bytes, (d) => prepress.fixHairlines(d, idx, h));
+export const addPrinterMarks = (bytes, idx, m) => edit(bytes, (d) => ({ widened: prepress.addPrinterMarks(d, idx, m) }));
+
+/** Accessibility (see a11y.js). */
+export const autoTag = (bytes, o) => edit(bytes, (d) => a11y.autoTag(d, o));
+export const tagFormFields = (bytes, o) => edit(bytes, (d) => a11y.tagFormFields(d, o));
+export const setTagProps = (bytes, key, o) => edit(bytes, (d) => { if (o.type) a11y.retag(d, key, o.type); if (o.alt !== undefined) a11y.setAlt(d, key, o.alt); });
+export const setAltTexts = (bytes, map) => edit(bytes, (d) => { for (const [k, v] of Object.entries(map)) a11y.setAlt(d, k, v); });
+export const fixAccessibility = (bytes) => edit(bytes, (d) => ({ fixed: a11y.fixSimple(d) }));
+export async function readTags(bytes) { return a11y.readTags(await loadForEdit(bytes)); }
+export async function accessibilityReport(bytes, o) { return a11y.checkReport(await loadForEdit(bytes), o); }
+
+/** Removes header and footer, watermark, background, Bates numbers or printer marks (kind) from the pages (all when not given). */
+export const removeMarks = (bytes, kind, pages) => edit(bytes, (d) => ({ removed: marks.removeMarks(d, kind, pages) }));
+/** The marks in the document: [{kind, label, pages, settings}]. */
+export async function listMarks(bytes) { return marks.listMarks(await loadForEdit(bytes)); }
+
+/**
+ * o: {left,center,right,footLeft,footCenter,footRight,size,color,margin,pages,startNumber,replace,settings} with
+ * {page},{pages},{date},{file}. replace: remove the header and footer already there first (Update).
+ */
 export function addHeaderFooter(bytes, o, readFont) {
   return edit(bytes, async (d) => {
+    if (o.replace) marks.removeMarks(d, 'HeaderFooter');
     const pages = o.pages || d.getPageIndices();
     const total = pages.length;
     const all = [o.left, o.center, o.right, o.footLeft, o.footCenter, o.footRight].filter(Boolean).join('');
@@ -438,7 +476,7 @@ export function addHeaderFooter(bytes, o, readFont) {
     pages.forEach((i, k) => {
       const p = d.getPage(i);
       const n = (o.startNumber || 1) + k;
-      inDisplaySpace(p, (W, H) => {
+      marks.drawMark(p, 'HeaderFooter', () => inDisplaySpace(p, (W, H) => {
         const put = (t, pos, y) => {
           if (!t) return;
           const s = fill(t, n);
@@ -448,7 +486,7 @@ export function addHeaderFooter(bytes, o, readFont) {
         };
         put(o.left, 0, H - margin - size); put(o.center, 1, H - margin - size); put(o.right, 2, H - margin - size);
         put(o.footLeft, 0, margin); put(o.footCenter, 1, margin); put(o.footRight, 2, margin);
-      });
+      }), { settings: o.settings });
     });
   });
 }
@@ -456,17 +494,18 @@ export function addHeaderFooter(bytes, o, readFont) {
 export const addBates = (bytes, o, readFont) => addHeaderFooterBates(bytes, o, readFont);
 function addHeaderFooterBates(bytes, o, readFont) {
   return edit(bytes, async (d) => {
+    if (o.replace) marks.removeMarks(d, 'Bates');
     const font = await getFont(d, 'Helvetica', { bold: true }, '', readFont);
     const size = o.size || 10; const margin = o.margin ?? 24;
     let n = o.start || 1;
     for (const i of o.pages || d.getPageIndices()) {
       const label = `${o.prefix || ''}${String(n).padStart(o.digits || 6, '0')}${o.suffix || ''}`;
       const p = d.getPage(i);
-      inDisplaySpace(p, (W, H) => {
+      marks.drawMark(p, 'Bates', () => inDisplaySpace(p, (W, H) => {
         const w = font.widthOfTextAtSize(label, size);
         const { x, y } = placeAnchor(o.position || 'bottom-right', W, H, w, size, margin);
         p.drawText(sanitizeFor(font, label), { x, y, size, font, color: hex(o.color) });
-      });
+      }), { settings: o.settings });
       n++;
     }
   });
@@ -889,6 +928,32 @@ export function setPageImages(bytes, list) {
     }
     gcObjects(d);
   });
+}
+
+/** Enhance scanned pages: clean up or black and white, in the same image objects (see scanfix.js). */
+export const enhanceScans = (bytes, idx, o) => edit(bytes, (d) => scanfix.enhanceScans(d, idx, o));
+/**
+ * Replaces the content of a page with a picture (a straightened photo) and gives the page the picture's size
+ * (width x height in points). Comments and form fields stay; the page boxes become the new size.
+ */
+export function setPagePicture(bytes, page, jpeg, width, height) {
+  return edit(bytes, async (d) => {
+    const p = d.getPage(page);
+    const img = await d.embedJpg(jpeg);
+    for (const k of ['TrimBox', 'BleedBox', 'ArtBox']) p.node.delete(PDFName.of(k));
+    p.setMediaBox(0, 0, width, height); p.setCropBox(0, 0, width, height); p.setRotation(degrees(0));
+    p.node.set(PDFName.of('Contents'), d.context.obj([]));
+    p.node.set(PDFName.of('Resources'), d.context.obj({}));
+    p.contentStream = undefined; p.contentStreamRef = undefined; p.fontKey = undefined; p.font = undefined;
+    p.drawImage(img, { x: 0, y: 0, width, height });
+    gcObjects(d);
+  });
+}
+
+/** XFA forms: whether the document has one ({isStatic}) or null; converting into normal pages and form fields. */
+export async function xfaInfo(bytes) { const x = xfa.readXfa(await loadForEdit(bytes)); return x ? { isStatic: x.isStatic } : null; }
+export async function convertXfa(bytes, readFont, o = {}) {
+  return xfa.convertXfa(await loadForEdit(bytes), { ...o, fonts: async (doc, bold, text) => getFont(doc, 'Arial', { bold }, text, readFont).catch(() => null) });
 }
 
 /** Simple rectangle fill on a page in page coordinates. */

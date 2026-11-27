@@ -10,6 +10,7 @@ import { readFont, pdfjs, RENDER_OPTS } from './document.js';
 import { startDrag } from './overlay.js';
 import { mapFamily, cssFamily, cssFamilyReady, wordDefault, familyInfo } from './fonts.js';
 import { fontPicker } from './fontpicker.js';
+import { RichInput, sameStyle, normalizeRow, lineRuns, cellLayout } from './richedit.js';
 
 export { mapFamily };
 
@@ -74,7 +75,7 @@ export function buildBlocks(items, allowTilt = false, opts = {}) {
       kind: 'text', text: b.lines.map((l) => l.text).join('\n'), rect: [x0, bottom, x1, top], size, lineHeight, baseline: first.y, mark: b.mark,
       lines: b.lines.map((l) => ({
         text: l.text, x0: l.x0, x1: l.x1, y: l.y, size: l.size, cells: l.cells.map((c) => ({ ...c })),
-        parts: l.parts.map((p) => ({ item: p.item, at: p.at, x0: p.x0, x1: p.x1, size: p.size })),
+        parts: l.parts.map((p) => ({ item: p.item, at: p.at, x0: p.x0, x1: p.x1, size: p.size, str: p.str })),
       })),
     };
   });
@@ -191,88 +192,35 @@ export function joinOcrLines(lines, size) {
 const overlap = (a, b) => Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0])) * Math.max(0, Math.min(a[3], b[3]) - Math.max(a[1], b[1]));
 
 /**
- * Font, size and color of each cell of a block (from the text object below its first part), and whether the block
- * is "complex": columns, several fonts, sizes or colors, lines that do not start at the same place or are not
- * evenly spaced. Such a block is set again cell by cell when its text changes, so nothing of this gets lost.
+ * Font, size and color of each part of a block's lines and of each cell (from the text object below it), and whether
+ * the block is "complex": columns, several fonts, sizes or colors (also within a line, e.g. a bold label and its
+ * value), lines that do not start at the same place or are not evenly spaced. Such a block is edited and set again
+ * part by part, so nothing of this gets lost (see lineRuns and RichInput).
  */
 export function cellStyles(b, textObjs) {
   const styles = [];
+  // Only text objects of this block that lie in its area can be below its parts.
+  const near = textObjs.filter((t) => (t.mark || null) === (b.mark || null) && overlap(b.rect, t.bbox) > 0);
+  const families = new Map();
   for (const l of b.lines || []) {
-    for (const c of l.cells || []) {
-      const p = l.parts[c.first];
+    for (const p of l.parts || []) {
       const box = [p.x0, l.y - p.size * 0.2, Math.max(p.x1, p.x0 + 0.1), l.y + p.size * 0.8];
       let o = null; let best = 0;
-      for (const t of textObjs) { if ((t.mark || null) !== (b.mark || null)) continue; const v = overlap(box, t.bbox); if (v > best) { best = v; o = t; } }
+      for (const t of near) { const v = overlap(box, t.bbox); if (v > best) { best = v; o = t; } }
       const font = o?.baseFont || '';
-      c.style = { family: mapFamily(font), bold: /bold|black|heavy/i.test(font), italic: /italic|oblique/i.test(font), color: o?.color || b.color || [0, 0, 0], size: p.size };
-      styles.push(c.style);
+      if (!families.has(font)) families.set(font, mapFamily(font));
+      p.style = { family: families.get(font), bold: /bold|black|heavy/i.test(font), italic: /italic|oblique/i.test(font), color: o?.color || b.color || [0, 0, 0], size: p.size };
+      styles.push(p.style);
     }
+    for (const c of l.cells || []) c.style = l.parts[c.first].style;
   }
   const s0 = styles[0];
-  const same = (s) => s.family === s0.family && s.bold === s0.bold && s.italic === s0.italic && Math.abs(s.size - s0.size) <= 0.3 && s.color.every((v, k) => Math.abs(v - s0.color[k]) <= 0.1);
   const L = b.lines || [];
-  b.complex = !!s0 && (L.some((l) => l.cells.length > 1) || !styles.every(same)
+  b.complex = !!s0 && (L.some((l) => l.cells.length > 1) || !styles.every((s) => sameStyle(s, s0))
     || L.some((l) => Math.abs(l.x0 - L[0].x0) > b.size * 0.5)
     || L.some((l, k) => k > 0 && Math.abs(L[k - 1].y - l.y - b.lineHeight) > b.size * 0.25));
 }
 
-/**
- * Lines of a complex block after its text has changed: [{ y, cells: [{ text, x, style }] }]. Unchanged lines keep
- * their place, changed lines keep the places and styles of their cells; only the cells that changed are joined
- * (in the style of the first one). New lines follow the line above, removed lines close the gap.
- * old: the block's lines, next: the new lines of text, lh: line height.
- */
-export function cellLayout(old, next, lh) {
-  const cellsOf = (l) => l.cells.map((c) => ({ text: l.text.slice(c.start, c.end), x: c.x0, style: c.style }));
-  const changed = (l, s) => {
-    const t = l.text; const cells = l.cells;
-    let p = 0; while (p < t.length && p < s.length && t[p] === s[p]) p++;
-    let q = 0; while (q < t.length - p && q < s.length - p && t[t.length - 1 - q] === s[s.length - 1 - q]) q++;
-    const a = p; const b = t.length - q;
-    let first = 0; cells.forEach((c, k) => { if (c.start <= a) first = k; });
-    let last = first; cells.forEach((c, k) => { if (k > first && c.start < b) last = k; });
-    const S = Math.min(cells[first].start, a); const E = Math.max(cells[last].end, b);
-    const out = [];
-    cells.forEach((c, k) => {
-      if (k < first || k > last) out.push({ text: t.slice(c.start, c.end), x: c.x0, style: c.style });
-      else if (k === first) out.push({ text: s.slice(S, E + s.length - t.length), x: c.x0, style: c.style });
-    });
-    return out;
-  };
-  // Pair old and new lines: equal lines as anchors (longest common subsequence), the others in order between them.
-  const n = old.length; const m = next.length;
-  const steps = [];
-  if (n === m) for (let k = 0; k < n; k++) steps.push({ a: k, b: k });
-  else {
-    const L = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
-    for (let a = n - 1; a >= 0; a--) for (let b = m - 1; b >= 0; b--) L[a][b] = old[a].text === next[b] ? L[a + 1][b + 1] + 1 : Math.max(L[a + 1][b], L[a][b + 1]);
-    const anchors = []; let a = 0; let b = 0;
-    while (a < n && b < m) { if (old[a].text === next[b]) { anchors.push([a, b]); a++; b++; } else if (L[a + 1][b] >= L[a][b + 1]) a++; else b++; }
-    let pa = 0; let pb = 0;
-    for (const [ea, eb] of [...anchors, [n, m]]) {
-      const k = Math.min(ea - pa, eb - pb);
-      for (let j = 0; j < k; j++) steps.push({ a: pa + j, b: pb + j });
-      for (let j = k; j < eb - pb; j++) steps.push({ b: pb + j });
-      for (let j = k; j < ea - pa; j++) steps.push({ a: pa + j });
-      if (ea < n) steps.push({ a: ea, b: eb });
-      pa = ea + 1; pb = eb + 1;
-    }
-  }
-  const rows = []; let off = 0; let prev = null; let ref = old[0];
-  for (const s of steps) {
-    if (s.b === undefined) { off += lh; continue; }
-    if (s.a === undefined) {
-      const y = prev ? prev.y - lh : old[0].y + off;
-      const c0 = ref.cells[0];
-      rows.push(prev = { y, cells: [{ text: next[s.b], x: c0 ? c0.x0 : ref.x0, style: c0?.style }] });
-      off -= lh;
-      continue;
-    }
-    const l = old[s.a]; ref = l;
-    rows.push(prev = { y: l.y + off, cells: l.text === next[s.b] ? cellsOf(l) : l.cells.length ? changed(l, next[s.b]) : [{ text: next[s.b], x: l.x0, style: null }] });
-  }
-  return rows;
-}
 /** Assigns each text item from PDF.js the marker of the text block it comes from in the page content. */
 export function attachMarks(items, textObjs) {
   if (!textObjs.some((o) => o.mark)) return items;
@@ -355,7 +303,8 @@ export class PageEditor {
       ocrMarks = r.ocr; markProps = r.props; glyphs = r.glyphs;
       return r.items.map(({ op, state, segments, ...x }) => x);
     })()]);
-    const textObjs = parsed.filter((o) => o.kind === 'text');
+    // Without what is left of removed text (only a shift, no glyph): it is no text and must not split a block.
+    const textObjs = parsed.filter((o) => o.kind === 'text' && !o.empty);
     // Characters that the PDF maps to nothing (e.g. raised hyphens) come from the shape of their glyph.
     const blocks = buildBlocks(attachMarks(fixUnmapped(content.items, glyphs), textObjs), false, { merge: true });
     for (const b of blocks) {
@@ -470,7 +419,7 @@ export class PageEditor {
     const el = h('div', { class: `eb ${o.kind === 'image' ? 'img' : ''} ${this.selected?.o === o ? 'sel' : ''}`, style: { left: `${css.left}px`, top: `${css.top}px`, width: `${css.width}px`, height: `${css.height}px` } });
     el._o = o;
     el.addEventListener('pointerdown', (e) => this.down(e, o, i, el));
-    el.addEventListener('dblclick', (e) => { e.stopPropagation(); e.preventDefault(); if (o.kind === 'text') this.startText(o, i); });
+    el.addEventListener('dblclick', (e) => { e.stopPropagation(); e.preventDefault(); if (o.kind === 'text') this.startText(o, i, { x: e.clientX, y: e.clientY }); });
     return el;
   }
 
@@ -519,7 +468,8 @@ export class PageEditor {
         const p = await pdf.getPage(1);
         const vp = p.getViewport({ scale, rotation: (p.rotate + viewRot) % 360 });
         const full = document.createElement('canvas'); full.width = Math.ceil(vp.width); full.height = Math.ceil(vp.height);
-        await p.render({ canvas: full, canvasContext: full.getContext('2d', { alpha: false }), viewport: vp, annotationMode: pdfjs.AnnotationMode.ENABLE_FORMS }).promise;
+        // Like the page in the viewer: check boxes draw into canvases of their own (thrown away here), not onto the page.
+        await p.render({ canvas: full, canvasContext: full.getContext('2d', { alpha: false }), viewport: vp, annotationMode: pdfjs.AnnotationMode.ENABLE_FORMS, annotationCanvasMap: new Map() }).promise;
         if (!isDragging()) return;
         const under = document.createElement('canvas'); under.width = W; under.height = H;
         under.getContext('2d').drawImage(full, sx, sy, W, H, 0, 0, W, H);
@@ -610,9 +560,14 @@ export class PageEditor {
 
   fontCss(o) { return `${o.italic ? 'italic ' : ''}${o.bold ? '700 ' : ''}${o.size * this.viewer.scale}px ${cssFamily(o.family)}`; }
 
-  startText(o, i) {
+  /** A block with columns or mixed fonts is edited part by part (see RichInput), so it looks like the result. */
+  richFor(o) { return o.kind === 'text' && o.complex && !o.ocr && !o.isNew && !o.bg && o.align !== 'right' && o.lines?.length > 0; }
+
+  /** at: { x, y } where the block was double-clicked (the caret goes there). */
+  startText(o, i, at = null) {
     this.commitInput();
     this.selected = { o, i };
+    if (this.richFor(o)) { this.startRich(o, i, at); return; }
     const n = this.viewer.node(i);
     // Recognized text: take the text and background colors from the scan.
     if (o.ocr && !o.sampled) { const c = this.sampleOcr(i, o); if (c?.text) o.color = c.text; o.ocrBg = c?.bg || null; o.sampled = true; }
@@ -683,10 +638,69 @@ export class PageEditor {
       fit();
     });
   }
+
+  /**
+   * Input field for a block with columns or mixed fonts: each part in its own font, size, weight and color at its
+   * place, the way it is set when finishing (see RichInput and setRows).
+   */
+  startRich(o, i, at) {
+    const n = this.viewer.node(i);
+    const css = this.viewer.rectToCss(i, o.rect);
+    const lh = o.lineHeight || o.size * 1.2;
+    const PAD = 6;
+    const frame = h('div', { class: 'eb-frame', title: 'Drag the frame to move' });
+    const input = { frame, o, i, move: [0, 0], shiftX: 0, shiftY: 0 };
+    const rich = new RichInput({
+      rows: cellLayout(o.lines, o.text.split('\n'), lh),
+      layoutText: (t) => cellLayout(o.lines, t.split('\n'), lh),
+      x0: o.rect[0], top: o.rect[3], scale: this.viewer.scale, lineHeight: lh,
+      fallback: { family: o.family, bold: o.bold, italic: o.italic, color: o.color, size: o.size },
+      fontCss: (st) => `${st.italic ? 'italic ' : ''}${st.bold ? '700' : '400'} ${st.size * this.viewer.scale}px ${cssFamily(st.family)}`,
+      minWidth: css.width + 2, minHeight: css.height,
+      onLayout: ({ width, height, top }) => {
+        Object.assign(frame.style, { left: `${css.left - PAD + input.shiftX}px`, top: `${css.top + top - PAD + input.shiftY}px`, width: `${width + 2 * PAD}px`, height: `${height + 2 * PAD}px` });
+      },
+      onStyle: () => { if (this.input === input) this.renderBar(); },
+      onFormat: (k) => { if (this.input === input) this.restyle({ [k]: !rich.styleAt()[k] }); },
+    });
+    input.rich = rich; input.ta = rich.host;
+    const host = rich.host;
+    Object.assign(host.style, { left: `${PAD}px`, top: `${PAD}px` });
+    frame.append(host);
+    host.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); host.blur(); } });
+    host.addEventListener('blur', () => setTimeout(() => {
+      if (this.input !== input || input.dragging) return;
+      const a = document.activeElement;
+      if (a?.closest?.('#propbar') || frame.contains(a)) return;
+      this.commitInput();
+    }, 120));
+    frame.addEventListener('pointerdown', (e) => {
+      if (e.target !== frame || e.button !== 0) return;
+      input.dragging = true;
+      const s0 = this.viewer.toPdf(i, e.clientX, e.clientY);
+      const l0 = parseFloat(frame.style.left); const t0 = parseFloat(frame.style.top); const x0 = e.clientX; const y0 = e.clientY;
+      startDrag(e, (mv) => { frame.style.left = `${l0 + mv.clientX - x0}px`; frame.style.top = `${t0 + mv.clientY - y0}px`; }, (up) => {
+        const s1 = this.viewer.toPdf(i, up.clientX, up.clientY);
+        input.move = [input.move[0] + s1[0] - s0[0], input.move[1] + s1[1] - s0[1]];
+        input.shiftX += up.clientX - x0; input.shiftY += up.clientY - y0;
+        input.dragging = false;
+        rich.focus();
+      }, n.el);
+    });
+    n.el.append(frame);
+    this.input = input;
+    rich.layout();
+    host.focus({ preventScroll: true });
+    if (!at || !rich.placeAt(at.x, at.y)) rich.caretToEnd();
+    this.renderBar();
+    // As soon as the fonts are loaded: place the parts again with the real widths and heights.
+    const families = [...new Set(rich.rows.flatMap((r) => r.cells.map((c) => (c.style || o).family)))];
+    Promise.all(families.map((f) => cssFamilyReady(f))).then(() => { if (this.input === input) rich.layout(); });
+  }
   cancelInput() {
     const c = this.input;
     if (!c) return;
-    this.input = null; c.frame.remove();
+    this.input = null; c.frame.remove(); c.rich?.dispose();
     if (c.o.isNew) this.selected = null;
     this.renderBar();
   }
@@ -694,6 +708,7 @@ export class PageEditor {
     const c = this.input;
     if (!c) return;
     this.input = null;
+    if (c.rich) { this.commitRich(c); return; }
     // Empty lines and trailing spaces (e.g. Enter to finish) are not set as text.
     const text = c.ta.value.replace(/\r/g, '').replace(/\s+$/, '');
     c.frame.remove();
@@ -710,6 +725,28 @@ export class PageEditor {
     if (text === o.text && !c.styled && !moved) { this.renderBar(); return; }
     const rect = moved ? [o.rect[0] + dx, o.rect[1] + dy, o.rect[2] + dx, o.rect[3] + dy] : null;
     this.replaceText(o, c.i, text, rect, c.styled || {}).catch(errToast);
+  }
+
+  /** Finishes the input field of a block with columns or mixed fonts: sets it again exactly as shown. */
+  commitRich(c) {
+    c.rich.dispose();
+    c.frame.remove();
+    const o = c.o;
+    const [dx, dy] = c.move;
+    const moved = Math.abs(dx) > 0.2 || Math.abs(dy) > 0.2;
+    const rect = moved ? [o.rect[0] + dx, o.rect[1] + dy, o.rect[2] + dx, o.rect[3] + dy] : null;
+    if (!c.rich.changed()) {
+      if (moved) this.replaceText(o, c.i, o.text, rect, {}).catch(errToast); else this.renderBar();
+      return;
+    }
+    const rows = c.rich.getRows();
+    const text = c.rich.text().replace(/\s+$/, '');
+    this.apply(async (bytes) => {
+      const d = await loadForEdit(bytes);
+      if (await this.setRows(d, c.i, o, rows, rect, null)) return saveDoc(d);
+      // A line would run over the page edge: the block is set as a whole, wrapped at the edge.
+      return saveDoc(await this.setBlockText(d, c.i, { ...o, complex: false }, text, rect, {}));
+    }, c.i).catch(errToast);
   }
 
   /**
@@ -811,6 +848,18 @@ export class PageEditor {
    * the right page edge or the text is not in the page content.
    */
   async setCells(d, i, o, text, rect, mark) {
+    return this.setRows(d, i, o, cellLayout(o.lines, text.split('\n'), o.lineHeight || o.size * 1.2), rect, mark);
+  }
+
+  /**
+   * Sets the rows of a block (see cellLayout and RichInput): each row on its baseline, each part in its own font, size
+   * and color; a part with a place x starts a column there (pushed to the right, with a quarter of the font size in
+   * between, when the text before it reaches it), the others follow the part before them. A part that stays as it was
+   * is copied exactly (same font, glyphs and spacing, e.g. bullets of a symbol font), only moved where its row or
+   * column moved. rect: new place of the block (moved), or null. Returns false if a row would run over the right page
+   * edge or the text is not in the page content.
+   */
+  async setRows(d, i, o, rows, rect, mark) {
     const page = d.getPage(i);
     page.node.normalize();
     const r = interpret(page);
@@ -818,25 +867,77 @@ export class PageEditor {
     if (!items.length) return false;
     const dx = rect ? rect[0] - o.rect[0] : 0; const dy = rect ? rect[1] - o.rect[1] : 0;
     const crop = page.getCropBox();
+    const right = crop.x + crop.width + 0.5;
     const fallback = { family: o.family, bold: o.bold, italic: o.italic, color: o.color, size: o.size };
-    const draw = [];
-    for (const row of cellLayout(o.lines, text.split('\n'), o.lineHeight || o.size * 1.2)) {
-      let next = -Infinity;
-      for (const c of row.cells) {
-        const t = c.text.replace(/\s+$/, '');
-        if (!t.trim()) continue;
-        const st = c.style || fallback;
-        const { font, fakeBold, fakeItalic } = await getStyledFont(d, st.family, st, t, readFont);
-        const x = Math.max(c.x + dx, next);
-        const w = font.widthOfTextAtSize(sanitizeFor(font, t), st.size);
-        if (x + w > crop.x + crop.width + 0.5) return false;
-        draw.push({ t, x, y: row.y + dy, font, fakeBold, fakeItalic, st });
-        next = x + w + st.size * 0.25;
+    // Which text operators of the page draw which part of the old lines (by area): runOps per part, opRuns per operator.
+    const area = (b) => Math.max(0, b[2] - b[0]) * Math.max(0, b[3] - b[1]);
+    const runOps = new Map(); const opRuns = new Map();
+    (o.lines || []).forEach((l, li) => lineRuns(l).forEach((run) => {
+      if (run.p0 === undefined) return;
+      const key = `${li}:${run.p0}`; const ops = new Set();
+      for (let p = run.p0; p <= run.p1; p++) {
+        const q = l.parts[p];
+        const box = [q.x0, l.y - q.size * 0.2, Math.max(q.x1, q.x0 + 0.1), l.y + q.size * 0.8];
+        for (const it of items) { const v = overlap(box, it.bbox); if (v > 0 && v >= 0.25 * Math.min(area(box), area(it.bbox))) ops.add(it); }
       }
+      runOps.set(key, ops);
+      for (const it of ops) { if (!opRuns.has(it)) opRuns.set(it, new Set()); opRuns.get(it).add(key); }
+    }));
+    const draw = []; const kept = [];
+    const setAgain = async (st, t, x, y) => {
+      const { font, fakeBold, fakeItalic } = await getStyledFont(d, st.family, st, t, readFont);
+      if (t.trim()) draw.push({ t, x, y, font, fakeBold, fakeItalic, st });
+      return font.widthOfTextAtSize(sanitizeFor(font, t), st.size);
+    };
+    for (const given of rows) {
+      const row = normalizeRow({ ...given, x0: given.x0 ?? given.cells.find((c) => c.x != null)?.x ?? o.rect[0], cells: given.cells.map((c) => ({ ...c })) });
+      let end = null; let gap = 0; let prev = null;
+      for (let k = 0; k < row.cells.length; k++) {
+        const c = row.cells[k];
+        const st = c.style || fallback;
+        // Spaces at the end of a part only count where the next part follows it directly.
+        const nextText = row.cells.slice(k + 1).find((n) => n.text);
+        const follow = !!nextText && nextText.x == null;
+        const t = follow ? c.text : c.text.replace(/\s+$/, '');
+        const column = k === 0 || c.x != null || end === null;
+        if (!t || (column && !t.trim() && !follow)) continue;
+        const s = c.src && o.lines?.[c.src.li] ? c.src : null;
+        if (s && runOps.get(`${s.li}:${s.p0}`)?.size && c.text === s.text && sameStyle(c.style, s.style) && (c.x ?? null) === (s.x ?? null)) {
+          // As it was: copied, moved like its row and column (a part that follows another copied one keeps its distance).
+          const l = o.lines[s.li];
+          const ox = s.x ?? l.parts[s.p0].x0; const ox1 = l.parts[s.p1].x1;
+          const ddy = row.y + dy - l.y;
+          const ddx = column ? Math.max((c.x ?? row.x0) + dx, end === null ? -Infinity : end + gap) - ox
+            : prev && Math.abs(prev[1] - ddy) < 1e-6 ? prev[0] : end - ox;
+          if (ox1 + ddx > right) return false;
+          kept.push({ key: `${s.li}:${s.p0}`, d: [ddx, ddy], st, t, x: ox + ddx, y: row.y + dy });
+          end = ox1 + ddx; gap = st.size * 0.25; prev = [ddx, ddy];
+          continue;
+        }
+        prev = null;
+        const x = column ? Math.max((c.x ?? row.x0) + dx, end === null ? -Infinity : end + gap) : end;
+        const w = await setAgain(st, t, x, row.y + dy);
+        if (x + w > right) return false;
+        end = x + w; gap = st.size * 0.25;
+      }
+    }
+    // An operator is copied if all parts it draws stay as they were and move the same way; otherwise these parts are
+    // set again at their new place.
+    const count = new Map(); for (const k of kept) count.set(k.key, (count.get(k.key) || 0) + 1);
+    const byKey = new Map(kept.map((k) => [k.key, k]));
+    const near = (a, b) => Math.abs(a[0] - b[0]) < 0.01 && Math.abs(a[1] - b[1]) < 0.01;
+    const groups = [];
+    for (const k of kept) {
+      const ok = count.get(k.key) === 1 && [...runOps.get(k.key)].every((it) => [...opRuns.get(it)].every((key) => count.get(key) === 1 && near(byKey.get(key).d, k.d)));
+      if (!ok) { await setAgain(k.st, k.t, k.x, k.y); continue; }
+      let g = groups.find((x) => near(x.d, k.d));
+      if (!g) { g = { d: k.d, ops: new Set() }; groups.push(g); }
+      for (const it of runOps.get(k.key)) g.ops.add(it);
     }
     const [open, close] = this.markOps(d, mark || o.mark || newMark());
     removeTextItems(page, r, items, o.mark || null);
     page.pushOperators(open);
+    for (const g of groups) page.pushOperators(...textCopyOperators(d.context, [...g.ops].sort((a, b) => a.op.start - b.op.start), g.d[0], g.d[1], r.endCtm));
     for (const c of draw) drawTextBlock(page, c.font, c.t, [c.x, c.y - c.st.size, c.x + 1e5, c.y + c.st.size], { size: c.st.size, color: c.st.color, lineHeight: c.st.size * 1.2, fakeBold: c.fakeBold, fakeItalic: c.fakeItalic });
     page.pushOperators(close);
     return true;
@@ -974,6 +1075,14 @@ export class PageEditor {
     // The tracking was tuned to the recognized font; a different font runs normally.
     if (st.family && o.hscale && o.hscale !== 1) st = { ...st, hscale: 1 };
     if (o.isNew) Object.assign(this.newStyle, st);
+    // Block with columns or mixed fonts: the selected text changes (without a selection the whole block).
+    const rich = this.input?.o === o ? this.input.rich : null;
+    if (rich) {
+      rich.restyle(st);
+      if (st.family) { const input = this.input; cssFamilyReady(st.family).then(() => { if (this.input === input) rich.layout(); }); }
+      this.renderBar();
+      return;
+    }
     if (this.input && this.input.o === o) {
       if (st.size && !o.isNew) this.input.styled = { ...(this.input.styled || {}), size: st.size };
       if (st.size) o.lineHeight *= st.size / o.size;
@@ -988,7 +1097,23 @@ export class PageEditor {
       this.renderBar();
       return;
     }
+    // Block with columns or mixed fonts: every part gets the format, the columns stay.
+    if (this.richFor(o)) { this.restyleRows(o, i, st).catch(errToast); return; }
     this.replaceText({ ...o }, i, o.text, null, st).catch(errToast);
+  }
+
+  /** Gives all parts of a block with columns or mixed fonts the format st (a new size also scales the line spacing). */
+  async restyleRows(o, i, st) {
+    const fallback = { family: o.family, bold: o.bold, italic: o.italic, color: o.color, size: o.size };
+    const rows = cellLayout(o.lines, o.text.split('\n'), o.lineHeight || o.size * 1.2)
+      .map((r) => ({ ...r, cells: r.cells.map((c) => ({ ...c, style: { ...(c.style || fallback), ...st } })) }));
+    const first = o.lines[0]?.cells?.[0]?.style?.size || o.size;
+    if (st.size && first) { const f = st.size / first; const y0 = rows[0].y; for (const r of rows) r.y = y0 - (y0 - r.y) * f; }
+    await this.apply(async (bytes) => {
+      const d = await loadForEdit(bytes);
+      if (await this.setRows(d, i, o, rows, null, null)) return saveDoc(d);
+      return saveDoc(await this.setBlockText(d, i, { ...o, complex: false }, o.text, null, st));
+    }, i);
   }
 
   renderBar() {
@@ -1002,13 +1127,15 @@ export class PageEditor {
     } else {
       const { o, i } = sel;
       const keep = (e) => e.preventDefault();
+      // In a block with columns or mixed fonts, the format where the caret is.
+      const st = (this.input?.o === o && this.input.rich?.styleAt()) || o;
       if (o.ocr) items.push(h('span', { class: 'ocr-tag', title: 'This text was recognized in a scan. When you edit it, the old letters are removed from the image and the text is set again.' }, 'Recognized text'));
       items.push(
-        fontPicker(o.family, (family) => this.restyle({ family })),
-        h('label', {}, 'Size', h('input', { type: 'number', min: 4, max: 200, step: 0.5, value: Math.round(o.size * 10) / 10, style: { width: '60px' }, onchange: (e) => { const v = parseFloat(e.target.value); if (v >= 4 && v <= 200) this.restyle({ size: v }); } })),
-        h('button', { class: `ib ${o.bold ? 'active' : ''}`, type: 'button', title: 'Bold', onpointerdown: keep, onclick: () => this.restyle({ bold: !o.bold }) }, h('b', {}, 'B')),
-        h('button', { class: `ib ${o.italic ? 'active' : ''}`, type: 'button', title: 'Italic', onpointerdown: keep, onclick: () => this.restyle({ italic: !o.italic }) }, h('i', {}, 'I')),
-        h('label', {}, 'Color', h('input', { type: 'color', value: rgbToHex(o.color), onchange: (e) => this.restyle({ color: hexToRgb(e.target.value) }) })),
+        fontPicker(st.family, (family) => this.restyle({ family })),
+        h('label', {}, 'Size', h('input', { type: 'number', min: 4, max: 200, step: 0.5, value: Math.round(st.size * 10) / 10, style: { width: '60px' }, onchange: (e) => { const v = parseFloat(e.target.value); if (v >= 4 && v <= 200) this.restyle({ size: v }); } })),
+        h('button', { class: `ib ${st.bold ? 'active' : ''}`, type: 'button', title: 'Bold', onpointerdown: keep, onclick: () => this.restyle({ bold: !st.bold }) }, h('b', {}, 'B')),
+        h('button', { class: `ib ${st.italic ? 'active' : ''}`, type: 'button', title: 'Italic', onpointerdown: keep, onclick: () => this.restyle({ italic: !st.italic }) }, h('i', {}, 'I')),
+        h('label', {}, 'Color', h('input', { type: 'color', value: rgbToHex(st.color || [0, 0, 0]), onchange: (e) => this.restyle({ color: hexToRgb(e.target.value) }) })),
         this.input ? h('button', { class: 'btn primary', type: 'button', onpointerdown: keep, onclick: () => this.commitInput() }, 'Done') : h('button', { class: 'btn', type: 'button', onclick: () => this.startText(o, i) }, 'Edit text'),
         h('span', { class: 'spacer' }), ibtn('trash', o.isNew ? 'Discard' : 'Delete text', () => this.remove()),
       );

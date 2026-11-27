@@ -1,6 +1,6 @@
 // Application: tabs, home page, commands, open/save/print.
 import './motion.js';
-import { Doc } from './document.js';
+import { Doc, pdfjs, RENDER_OPTS } from './document.js';
 import { Viewer } from './viewer.js';
 import { Overlay } from './overlay.js';
 import { PageEditor } from './editor.js';
@@ -8,14 +8,19 @@ import { Find } from './find.js';
 import { FieldDetector } from './formauto.js';
 import { Panels, Organizer } from './panels.js';
 import { Tools } from './tools.js';
-import { h, $, $$, icon, ibtn, toast, errToast, busy, formDialog, messageBox, fmtDate, fmtSize, canvasBytes } from './util.js';
-import { setMetadata, parseRange } from './pdf/ops.js';
+import { h, $, $$, icon, ibtn, toast, errToast, busy, formDialog, messageBox, fmtDate, fmtSize, contextMenu, MAC, emptyState, canvasBytes } from './util.js';
+import { setMetadata } from './pdf/ops.js';
 import { openPreferences, withDefaults } from './prefs.js';
 import { Scripting } from './scripting.js';
 import { FormCalc } from './formcalc.js';
 import { loadFonts } from './fonts.js';
 import { scannedPages } from './scan.js';
 import { fileToPdf } from './convert.js';
+import { printDocument } from './print.js';
+import { Autosave } from './autosave.js';
+import { openPalette } from './palette.js';
+import { listFonts, fontKind } from './pdf/docfonts.js';
+import { loadForEdit } from './pdf/ops.js';
 
 const dp = window.dp;
 
@@ -23,7 +28,33 @@ const dp = window.dp;
  * Tool cards in full rows: the number of columns is chosen so that the last row is as full as possible
  * (e.g. 18 tools as 6 x 3 instead of 8 + 8 + 2), as long as the cards keep a comfortable width.
  */
-const CARD_MIN = 220; const CARD_MAX = 480; const CARD_GAP = 12;
+const CARD_MIN = 200; const CARD_MAX = 420; const CARD_GAP = 10;
+/** The tools on the home page. */
+const HOME_TOOLS = ['edit', 'comment', 'fillsign', 'organize', 'combine', 'convert', 'create', 'ocr', 'protect', 'compress'];
+/** Width in pixels of the picture of a recent file's first page (the cards are about 150 px wide on the screen). */
+const THUMB_W = 320;
+
+/**
+ * Picture of the first page of a recent file for the home page, read from the file on disk (with its comments and form
+ * values as saved). Returns the picture's address, or null: no picture for files over 80 MB and for documents that
+ * need a password to open (their content is not copied into the picture folder).
+ */
+async function firstPagePicture(path) {
+  const st = await dp.fileStat(path);
+  if (!st || st.size > 80e6) return null;
+  const task = pdfjs.getDocument({ data: await dp.readFile(path), ...RENDER_OPTS });
+  try {
+    const pdf = await task.promise;
+    const page = await pdf.getPage(1);
+    const vp = page.getViewport({ scale: THUMB_W / page.getViewport({ scale: 1 }).width });
+    const c = document.createElement('canvas'); c.width = Math.ceil(vp.width); c.height = Math.ceil(vp.height);
+    await page.render({ canvas: c, canvasContext: c.getContext('2d', { alpha: false }), viewport: vp, annotationMode: pdfjs.AnnotationMode.ENABLE, background: 'white' }).promise;
+    return await dp.recentThumb(path, await canvasBytes(c, 'image/jpeg', 0.85));
+  } catch (e) {
+    if (e?.name !== 'PasswordException') console.warn('Picture of the first page', e);
+    return null;
+  } finally { task.destroy(); }
+}
 function balanceGrid(grid) {
   const fit = () => {
     const n = grid.children.length; const w = grid.clientWidth;
@@ -48,7 +79,7 @@ const editing = () => { const a = document.activeElement; return a && (a.tagName
 const inForm = () => !!document.activeElement?.closest?.('.annotationLayer');
 
 class App {
-  constructor() { this.docs = []; this.doc = null; this.view = 'home'; this.settings = {}; }
+  constructor() { this.docs = []; this.doc = null; this.view = 'home'; this.settings = {}; this.closed = []; }
 
   async init() {
     // IT policy: blocked features stay off, regardless of what the settings say.
@@ -79,12 +110,14 @@ class App {
     this.applySettings();
     // "Same as Windows": follow the switch between light and dark Windows immediately.
     matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => this.applyAppearance());
+    this.autosave = new Autosave(this);
     const initial = await dp.ready();
     // Preference "Reopen the last open documents".
     if (this.settings.restoreDocs && !initial.length) {
       for (const p of this.settings.lastOpen || []) if (await dp.fileStat(p)) await this.openPath(p);
     }
     for (const p of initial) await this.openPath(p);
+    await this.autosave.offerRecovery().catch((e) => console.warn('Recovery', e));
   }
 
   enforcePolicy(s) {
@@ -114,20 +147,84 @@ class App {
     const want = this.settings?.appearance;
     const dark = want === 'dark' || (want === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
     document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+    // The window buttons in the title bar (Windows) take the colors of the bar.
+    const css = getComputedStyle(document.documentElement);
+    dp.titlebar?.({ color: css.getPropertyValue('--titlebar').trim(), symbolColor: css.getPropertyValue('--ink2').trim() }).catch(() => {});
   }
 
   userName() { return this.settings.userName || 'User'; }
   saveSettings() { return dp.settingsSet(this.settings); }
 
   // --- Interface ---------------------------------------------------------------------------
+  /**
+   * Title bar (the window has no frame of its own): ☰ with the menu (Windows; a Mac keeps its menu bar at the top of
+   * the screen), the tabs, a search field in the middle that opens the command search, and Open and Preferences.
+   */
   buildTop() {
+    document.body.classList.toggle('mac', MAC);
+    if (!MAC) {
+      this.menuBtn = ibtn('menu', 'Menu (Alt)', () => this.openMenu(), { id: 'menu-btn', 'aria-haspopup': 'menu', 'aria-label': 'Menu' });
+      $('#topbar .tb-left').prepend(this.menuBtn);
+      this.bindMenuKeys();
+    }
+    const search = h('button', { id: 'cmd-search', type: 'button', title: 'Search tools and commands (Ctrl+Shift+P)', 'aria-label': 'Search tools and commands', onclick: () => openPalette(this) },
+      icon('search'), h('span', { class: 'ph' }, 'Search tools and commands'), h('kbd', {}, 'Ctrl+Shift+P'));
+    // Typing on the focused field starts the search with that letter.
+    search.addEventListener('keydown', (e) => { if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey && e.key !== ' ') { e.preventDefault(); openPalette(this, e.key); } });
+    $('#topbar .tb-center').append(search);
     $('#top-actions').append(ibtn('open', 'Open (Ctrl+O)', () => this.run('open')), ibtn('gear', 'Preferences (Ctrl+K)', () => this.run('preferences')));
+    dp.onWindowState?.((s) => this.applyWindowState(s));
+    dp.windowState?.().then((s) => this.applyWindowState(s)).catch(() => {});
+    new ResizeObserver(() => this.fitTitlebar()).observe($('#topbar'));
+  }
+  /** Opens the menu below the ☰ button (the same menu as the menu bar, with all shortcuts). */
+  openMenu() {
+    if (!this.menuBtn || document.querySelector('.scrim')) return;
+    const r = this.menuBtn.getBoundingClientRect();
+    dp.menu(r.left, r.bottom + 2).catch(() => {});
+  }
+  /** Windows: Alt on its own or F10 opens the menu, as the menu bar did. */
+  bindMenuKeys() {
+    let alt = false;
+    document.addEventListener('keydown', (e) => {
+      alt = e.key === 'Alt' && !e.ctrlKey && !e.shiftKey && !e.metaKey && !e.repeat;
+      if (e.key === 'F10' && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) { e.preventDefault(); this.openMenu(); }
+    }, true);
+    document.addEventListener('keyup', (e) => { if (e.key === 'Alt' && alt) { alt = false; e.preventDefault(); this.openMenu(); } }, true);
+    document.addEventListener('pointerdown', () => { alt = false; }, true);
+    window.addEventListener('blur', () => { alt = false; });
+  }
+  applyWindowState(s) { document.body.classList.toggle('win-fullscreen', !!s?.fullscreen); }
+  /**
+   * The search field stays in the middle of the window as long as the tabs fit to the left of it. More tabs push it
+   * to the right, then it becomes narrower (down to 180 px); only after that do the tabs become narrower.
+   */
+  fitTitlebar() {
+    const bar = $('#topbar'); const tabs = $('#tabs'); const center = $('#topbar .tb-center');
+    if (!bar || !tabs || !center || !bar.clientWidth) return;
+    const cs = getComputedStyle(bar);
+    const W = bar.clientWidth; const padL = parseFloat(cs.paddingLeft); const padR = parseFloat(cs.paddingRight);
+    const lead = [...tabs.parentElement.children].filter((c) => c !== tabs).reduce((w, c) => w + c.offsetWidth + 2, 0);
+    let need = 0;
+    for (const t of tabs.children) {
+      const name = t.querySelector('.name');
+      need += Math.min(220, t.offsetWidth + (name ? name.scrollWidth - name.clientWidth : 0)) + 2;
+    }
+    const from = padL + lead + need + 12; const to = W - padR - $('#topbar .tb-right').offsetWidth - 12;
+    let w = 400; let x = (W - w) / 2;
+    if (x < from) x = from;
+    if (x + w > to) w = Math.max(180, to - x);
+    if (x + w > to) x = to - w;
+    bar.style.setProperty('--search-x', `${Math.round(x)}px`);
+    bar.style.setProperty('--search-w', `${Math.round(w)}px`);
+    bar.style.setProperty('--tabs-max', `${Math.max(0, Math.round(x - 12 - padL - lead))}px`);
+    center.classList.toggle('narrow', w < 300);
   }
   buildDocToolbar() {
     const gb = (id, label, fn) => h('button', { class: 'gb', type: 'button', data: { g: id }, onclick: fn }, label);
     const bar = $('#doc-toolbar');
     bar.append(
-      ibtn('menu', 'Show/hide tools pane', () => this.run('toggle-left')),
+      ibtn('sidebar', 'Show/hide tools pane (Shift+F4)', () => this.run('toggle-left')),
       gb('all', 'All tools', () => { this.tools.closeGroup(); $('#left-panel').classList.remove('collapsed'); }),
       gb('edit', 'Edit', () => this.tools.openGroup('edit')), gb('convert', 'Convert', () => this.tools.openGroup('convert')), gb('fillsign', 'E-Sign', () => this.tools.openGroup('fillsign')),
       h('span', { class: 'spacer' }),
@@ -185,15 +282,20 @@ class App {
   }
 
   renderTabs() {
-    const tab = (id, label, fn, extra) => h('button', { class: `tab ${this.view === id ? 'active' : ''}`, type: 'button', role: 'tab', onclick: fn, ...extra?.props }, ...(extra?.kids || [label]));
+    const tab = (id, label, ic, fn) => h('button', { class: `tab ${this.view === id ? 'active' : ''}`, type: 'button', role: 'tab', 'aria-selected': String(this.view === id), data: { view: id }, onclick: fn }, icon(ic), h('span', { class: 'name' }, label));
     $('#tabs').replaceChildren(
-      tab('home', 'Home', () => this.showHome()),
-      tab('tools', 'All tools', () => this.showTools()),
-      ...this.docs.map((d) => h('button', { class: `tab ${this.view === 'doc' && d === this.doc ? 'active' : ''}`, type: 'button', role: 'tab', title: d.path || d.name, data: { doc: d.id }, onclick: () => this.activate(d), onauxclick: (e) => { if (e.button === 1) this.closeDoc(d); } },
-        d.dirty ? h('span', { class: 'dirty', title: 'Not saved' }) : null, h('span', { class: 'name' }, d.name),
-        h('span', { class: 'x', role: 'button', title: 'Close', onclick: (e) => { e.stopPropagation(); this.closeDoc(d); } }, icon('x')))),
+      tab('home', 'Home', 'home', () => this.showHome()),
+      tab('tools', 'All tools', 'tools', () => this.showTools()),
+      ...this.docs.map((d) => {
+        const on = this.view === 'doc' && d === this.doc;
+        return h('button', { class: `tab ${on ? 'active' : ''}`, type: 'button', role: 'tab', 'aria-selected': String(on), title: d.path || d.name, data: { doc: d.id }, onclick: () => this.activate(d), onauxclick: (e) => { if (e.button === 1) this.closeDoc(d); }, oncontextmenu: (e) => { e.preventDefault(); this.tabMenu(e, d); } },
+          icon('file'), h('span', { class: 'name' }, d.name), d.dirty ? h('span', { class: 'dirty', title: 'Not saved' }) : null,
+          h('span', { class: 'x', role: 'button', title: 'Close', onclick: (e) => { e.stopPropagation(); this.closeDoc(d); } }, icon('x')));
+      }),
     );
     dp.setTitle(this.view === 'doc' && this.doc ? `${this.doc.dirty ? '*' : ''}${this.doc.name}` : '');
+    this.fitTitlebar();
+    $('#tabs .tab.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }
   /** Closes floating windows that belong to a position in the document (note, mini toolbar). */
   closeFloats() { document.querySelectorAll('.note-pop,.mini').forEach((n) => n.remove()); }
@@ -202,21 +304,67 @@ class App {
   showTools() { this.setView('tools'); }
   showDocView() { this.setView('doc'); }
 
+  /**
+   * Home page: a large area to drop or open a PDF, the recent files as pictures of their first page (the full path
+   * only as a tooltip) and colored tiles of the main tools.
+   */
   async renderHome() {
     const recent = await dp.recentGet();
-    $('#view-home').replaceChildren(
-      h('div', { class: 'home-hero' }, h('img', { src: 'assets/logo.svg', alt: 'DocPilot' }), h('div', { class: 't' }, h('h1', {}, 'DocPilot'), h('p', {}, 'View, edit, comment on and sign PDFs.')), h('button', { class: 'btn primary', type: 'button', id: 'home-open', onclick: () => this.run('open') }, icon('open'), 'Open file')),
-      h('h2', { class: 'sec' }, 'Recommended tools'),
-      balanceGrid(h('div', { class: 'home-grid' }, ['edit', 'combine', 'organize', 'convert', 'fillsign', 'comment', 'protect', 'ocr'].map((id) => this.toolCard(id)))),
-      h('h2', { class: 'sec' }, 'Recently opened'),
-      h('div', { class: 'recent' }, recent.length ? recent.map((r) => h('button', { class: `row ${r.exists ? '' : 'missing'}`, type: 'button', onclick: () => (r.exists ? this.openPath(r.path) : toast('The file was not found.', 'err')), oncontextmenu: async (e) => { e.preventDefault(); await dp.recentRemove(r.path); this.renderHome(); } }, icon('blank'), h('span', {}, r.name), h('span', { class: 'p' }, `${fmtDate(new Date(r.opened).toISOString())}  ${r.path}`))) : h('div', { class: 'empty' }, 'No files opened yet. Drag a PDF here.')),
-    );
+    const open = () => this.run('open');
+    const drop = h('div', { class: 'home-hero drop-zone', id: 'home-drop', role: 'button', tabindex: '0', 'aria-label': 'Drop a PDF here or open one',
+      onclick: (e) => { if (!e.target.closest('button')) open(); }, onkeydown: (e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); open(); } } },
+    h('img', { class: 'logo', src: 'assets/logo.svg', alt: 'DocPilot' }),
+    h('span', { class: 'dz-ic' }, icon('drop')),
+    h('h1', {}, 'Drop a PDF here or open one'),
+    h('p', {}, 'View, edit, comment on and sign PDFs. Everything stays on your computer.'),
+    h('button', { class: 'btn primary', type: 'button', id: 'home-open', onclick: open }, icon('open'), 'Open file'));
+    const head = (title, ...right) => h('div', { class: 'sec-head' }, h('h2', { class: 'sec' }, title), ...right);
+    this.thumbTried ||= new Set();
+    const cards = recent.map((r) => {
+      if (r.exists && !r.thumb && !this.thumbTried.has(r.path)) { this.thumbTried.add(r.path); this.thumbLater(r.path); }
+      return this.recentCard(r);
+    });
+    $('#view-home').replaceChildren(h('div', { class: 'home-wrap' },
+      drop,
+      head('Recent files', recent.length ? h('button', { class: 'link', type: 'button', onclick: () => this.run('recent-clear') }, 'Clear list') : null),
+      recent.length ? h('div', { class: 'recent-grid' }, cards) : h('div', { class: 'recent-none' }, emptyState('file', 'No files opened yet', 'The files you open appear here with a picture of their first page.')),
+      head('Tools', h('button', { class: 'link', type: 'button', onclick: () => this.showTools() }, 'All tools', icon('chevR'))),
+      balanceGrid(h('div', { class: 'home-grid' }, HOME_TOOLS.map((id) => this.toolCard(id))))));
+  }
+  /** A recent file: picture of the first page, name and when it was opened; right-click for more. */
+  recentCard(r) {
+    const pic = h('span', { class: 'rc-pic' }, r.thumb ? h('img', { src: r.thumb, alt: '', draggable: 'false' }) : icon(r.exists ? 'file' : 'x'));
+    const menu = (e) => {
+      e.preventDefault();
+      contextMenu(e.clientX, e.clientY, [
+        { label: 'Open', run: () => this.openPath(r.path), disabled: !r.exists },
+        { label: 'Show in Explorer', run: () => dp.reveal(r.path), disabled: !r.exists },
+        '-',
+        { label: 'Remove from list', run: async () => { await dp.recentRemove(r.path); this.renderHome(); } },
+      ]);
+    };
+    return h('button', { class: `recent-card ${r.exists ? '' : 'missing'}`, type: 'button', title: r.path, data: { path: r.path }, onclick: () => (r.exists ? this.openPath(r.path) : toast('The file was not found.', 'err')), oncontextmenu: menu },
+      pic, h('span', { class: 'rc-name' }, r.name), h('span', { class: 'rc-meta' }, r.exists ? fmtDate(new Date(r.opened).toISOString()) : 'File not found'));
+  }
+  /** Makes the picture of a recent file's first page in the background, one file after the other. */
+  thumbLater(path) {
+    (this.thumbQueue ||= new Set()).add(path);
+    if (this.thumbBusy) return;
+    this.thumbBusy = (async () => {
+      while (this.thumbQueue.size) {
+        const [p] = this.thumbQueue; this.thumbQueue.delete(p);
+        const url = await firstPagePicture(p);
+        if (!url) continue;
+        for (const c of $$('#view-home .recent-card')) if (c.dataset.path === p) c.querySelector('.rc-pic').replaceChildren(h('img', { src: url, alt: '', draggable: 'false' }));
+      }
+      this.thumbBusy = null;
+    })();
   }
   toolCard(id) {
     const g = this.tools.groups.find((x) => x.id === id);
-    return h('button', { class: 'tool-card', type: 'button', data: { card: id }, onclick: () => this.tools.openGroup(id) }, h('span', { class: 'tc-ic' }, icon(g.icon)), h('span', { class: 'tc-t' }, h('b', {}, g.label), h('small', {}, g.desc || '')));
+    return h('button', { class: 'tool-card tint', type: 'button', title: g.desc || g.label, data: { card: id }, style: { '--gc': g.color }, onclick: () => this.tools.openGroup(id) }, h('span', { class: 'tc-ic' }, icon(g.icon)), h('span', { class: 'tc-t' }, h('b', {}, g.label), h('small', {}, g.desc || '')));
   }
-  renderToolsView() { $('#view-tools').replaceChildren(h('h2', { class: 'sec' }, 'All tools'), balanceGrid(h('div', { class: 'home-grid' }, this.tools.groups.filter((g) => !g.hidden).map((g) => this.toolCard(g.id))))); }
+  renderToolsView() { $('#view-tools').replaceChildren(h('div', { class: 'home-wrap' }, h('div', { class: 'sec-head' }, h('h2', { class: 'sec' }, 'All tools')), balanceGrid(h('div', { class: 'home-grid' }, this.tools.groups.filter((g) => !g.hidden).map((g) => this.toolCard(g.id)))))); }
 
   // --- Documents -------------------------------------------------------------------------
   async openDialog() { const p = await dp.openDialog({ title: 'Open PDF', multi: true }); for (const x of p) await this.openPath(x); return p.length; }
@@ -226,7 +374,11 @@ class App {
     try {
       const bytes = await dp.readFile(path);
       const d = await this.addDoc(new Doc({ name: path.split(/[\\/]/).pop(), path, bytes }));
-      if (d) await dp.recentAdd(path);
+      if (d) {
+        await dp.recentAdd(path);
+        // Picture of the first page for the home page, if there is none for this version of the file yet.
+        dp.recentGet().then((l) => { const r = l.find((x) => x.path.toLowerCase() === path.toLowerCase()); if (r?.exists && !r.thumb) this.thumbLater(path); }).catch(() => {});
+      }
       return d;
     } catch (e) { this.openError(e, path); return null; }
   }
@@ -245,6 +397,8 @@ class App {
     this.activate(doc);
     if (this.pendingGroup) { const g = this.pendingGroup; this.pendingGroup = null; this.tools.openGroup(g); }
     doc.scanCheck = this.checkScanned(doc, o).catch((e) => console.warn('Scan detection', e));
+    // XFA forms: offer to convert them into normal pages and form fields.
+    doc.pdf.getMetadata().then((m) => { doc.xfa = !!m?.info?.IsXFAPresent; if (doc.xfa && this.doc === doc) this.renderBanner(); }).catch(() => {});
     return doc;
   }
   /**
@@ -262,7 +416,7 @@ class App {
     if (this.doc === doc) this.renderBanner();
   }
   onDocEvent(doc, type, data) {
-    if (type === 'dirty') { this.renderTabs(); this.syncToolbar(); }
+    if (type === 'dirty') { this.renderTabs(); this.syncToolbar(); if (!doc.dirty) this.autosave?.drop(doc).catch(() => {}); }
     if (type === 'security') this.renderBanner();
     if (doc !== this.doc) return;
     if (type === 'reload') {
@@ -305,8 +459,9 @@ class App {
     const d = this.doc;
     const msg = !d ? null : d.signed ? ['info', 'This document is digitally signed.', 'Validate signatures', () => this.panels.show('signatures')]
       : d.restricted ? ['', 'This document is restricted by permissions.', 'Unlock', () => d.allowEdit()]
+        : d.xfa ? ['info', 'This document is an XFA form. Convert it into normal pages and form fields to fill it in and save it here.', 'Convert form', () => this.tools.convertXfaDialog()]
         : d.scanned && !d.ocrOffered ? ['info', 'This document appears to be scanned. Recognize text to search, copy and edit it.', 'Recognize text', () => this.tools.recognizeText([...Array(d.numPages).keys()]), 'Not now', () => { d.ocrOffered = true; this.renderBanner(); }]
-        : d.hasJS && !this.policy.allowJavaScript ? ['info', 'This document contains JavaScript. For security reasons it is not run (blocked by IT).']
+        : d.hasJS && !this.policy.allowJavaScript ? ['info', 'This document contains JavaScript. For security reasons it is not run.']
           : d.hasJS && !this.settings.jsEnabled ? ['info', 'This document contains JavaScript. JavaScript is turned off in Preferences.', 'Preferences', () => this.preferences('js')] : null;
     if (!msg) { b.hidden = true; return; }
     b.className = msg[0]; b.hidden = false;
@@ -327,6 +482,8 @@ class App {
     const i = this.docs.indexOf(d);
     if (i < 0) return true;
     this.docs.splice(i, 1);
+    if (d.path) { this.closed = this.closed.filter((p) => p !== d.path); this.closed.push(d.path); }
+    this.autosave?.drop(d).catch(() => {});
     if (this.doc === d) {
       this.editor.disable(); this.organizer.hide(); this.fieldDetect.cancel(); this.closeFloats(); if (this.tools.group) this.tools.closeGroup();
       this.viewer.doc = null; this.viewer.clear(); this.doc = null;
@@ -339,6 +496,7 @@ class App {
     for (const d of [...this.docs]) if (!(await this.confirmClose(d))) return;
     this.settings.lastOpen = this.docs.filter((d) => d.path).map((d) => d.path);
     await this.saveSettings();
+    await this.autosave?.dropAll().catch(() => {});
     await dp.closeOk();
   }
   async save(d = this.doc) {
@@ -357,6 +515,7 @@ class App {
       await busy('Saving document', () => d.saveTo(p));
       this.renderTabs();
       toast('Saved', 'ok');
+      this.thumbLater(p);
       return true;
     } catch (e) { errToast(e); return false; }
   }
@@ -366,24 +525,57 @@ class App {
     try { await this.exec(cmd, arg); } catch (e) { errToast(e); }
   }
   async exec(cmd, arg) {
-    const noDoc = { open: () => this.openDialog(), quit: () => this.requestQuit(), preferences: () => this.preferences(), about: () => this.about(), shortcuts: () => this.shortcuts(), 'show-tools': () => this.showTools(), 'recent-clear': async () => { await dp.recentRemove(null); this.renderHome(); }, 'create-from-file': () => this.tools.createFromFile(), 'create-scan': () => this.tools.createFromScanner(), 'create-clipboard': () => this.tools.createFromClipboard(), 'create-blank': () => this.tools.createBlank(), 'tool-combine': () => this.tools.combine(), 'tool-create-id': () => this.tools.createId(), 'tab-next': () => this.tabStep(1), 'tab-prev': () => this.tabStep(-1), 'close-all': async () => { for (const d of [...this.docs]) if (!(await this.closeDoc(d))) return; } };
+    const noDoc = { open: () => this.openDialog(), quit: () => this.requestQuit(), preferences: () => this.preferences(), about: () => this.about(), shortcuts: () => this.shortcuts(), 'show-tools': () => this.showTools(), 'recent-clear': async () => { await dp.recentRemove(null); this.renderHome(); }, 'create-from-file': () => this.tools.createFromFile(), 'create-separate': () => this.tools.createSeparate(), 'create-scan': () => this.tools.createFromScanner(), 'create-clipboard': () => this.tools.createFromClipboard(), 'create-blank': () => this.tools.createBlank(), 'tool-combine': () => this.tools.combine(), 'tool-create-id': () => this.tools.createId(), 'tab-next': () => this.tabStep(1), 'reopen-closed': () => this.reopenClosed(), 'command-palette': () => openPalette(this), 'action-wizard': () => this.tools.openGroup('actions'), 'tab-prev': () => this.tabStep(-1), 'close-all': async () => { for (const d of [...this.docs]) if (!(await this.closeDoc(d))) return; } };
     if (noDoc[cmd]) { await noDoc[cmd](); return; }
     if (cmd === 'undo' || cmd === 'redo') {
-      if (editing()) { document.execCommand(cmd); return; }
+      // The input field for blocks with columns or mixed fonts keeps its own steps.
+      if (editing()) {
+        const rich = this.editor.input?.rich;
+        if (rich && document.activeElement === rich.host) rich.history(cmd); else document.execCommand(cmd);
+        return;
+      }
     }
-    if (cmd === 'select-all' && editing()) { document.activeElement.select?.(); return; }
+    if (cmd === 'select-all' && editing()) {
+      const a = document.activeElement;
+      if (a.select) a.select(); else if (a.isContentEditable) window.getSelection().selectAllChildren(a);
+      return;
+    }
     if (cmd === 'delete' && editing()) return;
     const d = this.doc; const v = this.viewer;
     if (!d || this.view !== 'doc') { if (this.docs.length && d) this.setView('doc'); else { toast('Please open a document first.'); return; } }
     const T = this.tools;
     const cmds = {
-      save: () => this.save(), 'save-as': () => this.saveAs(), revert: () => this.revert(), print: () => this.print(), properties: () => this.properties(), 'close-tab': () => this.closeDoc(d),
-      export: () => T.exportAs(arg), undo: () => this.undoRedo('undo'), redo: () => this.undoRedo('redo'), delete: () => this.deleteSelected(), 'select-all': () => this.selectAllText(), deselect: () => { window.getSelection().removeAllRanges(); this.overlay.select(null); },
+      save: () => this.save(), 'save-as': () => this.saveAs(), reveal: () => this.reveal(d), revert: () => this.revert(), print: () => this.print(), properties: () => this.properties(), 'close-tab': () => this.closeDoc(d),
+      export: () => T.exportAs(arg), 'export-images': () => T.exportImages(), undo: () => this.undoRedo('undo'), redo: () => this.undoRedo('redo'), delete: () => this.deleteSelected(), 'select-all': () => this.selectAllText(), deselect: () => { window.getSelection().removeAllRanges(); this.overlay.select(null); },
       find: () => this.find.open(), replace: () => this.find.open({ replace: true }), 'find-advanced': () => this.panels.show('search'), tool: () => T.selectTool(arg), 'tool-group': () => T.openGroup(arg), 'tool-edit': () => T.openGroup('edit'), 'tool-organize': () => T.openGroup('organize'), 'tool-compress': () => T.compress(), 'tool-pdfa': () => T.pdfa(), 'tool-encrypt': () => T.encryptDialog(), 'tool-digital-sign': () => T.openGroup('certs'), 'sign-setup': () => T.signSetup('signature'), panel: () => this.panels.show(arg),
       'view-rotate': () => v.rotateView(arg), 'first-page': () => v.goto(0), 'prev-page': () => v.prev(), 'next-page': () => v.next(), 'last-page': () => v.goto(d.numPages - 1), 'goto-page': () => this.gotoDialog(), 'nav-back': () => v.back(), 'nav-forward': () => v.forward(), layout: () => v.setLayout(arg), 'zoom-in': () => v.zoomStep(1), 'zoom-out': () => v.zoomStep(-1), zoom: () => v.setZoom(arg),
       'toggle-rulers': () => this.toggleRulers(), 'toggle-grid': () => this.toggleGrid(), 'toggle-right': () => (this.panels.current ? this.panels.hide() : this.panels.show('thumbs')), 'toggle-left': () => { $('#left-panel').classList.toggle('collapsed'); v.scheduleRender(); }, 'reading-mode': () => document.body.classList.toggle('reading'), fullscreen: () => this.presentation(), speak: () => this.speak(arg),
     };
     if (cmds[cmd]) await cmds[cmd](); else console.warn('Unknown command', cmd);
+  }
+  /** Reopens the last closed tab (Ctrl+Shift+T); files that were moved or deleted are skipped. */
+  async reopenClosed() {
+    while (this.closed.length) {
+      const p = this.closed.pop();
+      if (this.docs.some((d) => d.path && d.path.toLowerCase() === p.toLowerCase())) continue;
+      if (await dp.fileStat(p)) { await this.openPath(p); return true; }
+    }
+    toast('There is no closed tab to reopen.');
+    return false;
+  }
+  /** Shows the document's file in Explorer (Finder on a Mac). */
+  reveal(d = this.doc) {
+    if (!d?.path) { toast('This document has not been saved as a file yet.'); return; }
+    dp.reveal(d.path);
+  }
+  tabMenu(e, d) {
+    contextMenu(e.clientX, e.clientY, [
+      { label: 'Show in Explorer', run: () => this.reveal(d), disabled: !d.path },
+      { label: 'Reopen closed tab', run: () => this.reopenClosed(), disabled: !this.closed.length },
+      '-',
+      { label: 'Close', run: () => this.closeDoc(d) },
+      { label: 'Close other tabs', run: async () => { for (const x of this.docs.filter((y) => y !== d)) if (!(await this.closeDoc(x))) return; } },
+    ]);
   }
   tabStep(d) { if (!this.docs.length) return; const i = this.docs.indexOf(this.doc); this.activate(this.docs[(i + d + this.docs.length) % this.docs.length]); }
   async undoRedo(kind) { this.editor.commitInput(); const ok = await this.doc[kind](); if (!ok) toast(kind === 'undo' ? 'Nothing to undo.' : 'Nothing to redo.'); this.overlay.select(null); this.syncToolbar(); }
@@ -405,53 +597,7 @@ class App {
     if (r) this.viewer.goto(r.p - 1);
   }
 
-  async print() {
-    const d = this.doc; const v = this.viewer;
-    if (d.permissions && !d.permissions.includes(4) && !d.permissions.includes(2048)) { toast('Printing is not allowed for this document.', 'err'); return; }
-    const printers = await dp.printers();
-    if (!printers.length) throw new Error('No printer was found.');
-    const r = await formDialog('Print', [
-      { k: 'deviceName', label: 'Printer', type: 'select', options: printers.map((p) => [p.name, p.displayName]), value: (printers.find((p) => p.isDefault) || printers[0]).name },
-      { k: 'copies', label: 'Copies', type: 'number', value: 1, min: 1, max: 999 },
-      { k: 'which', label: 'Pages', type: 'select', options: [['all', 'All'], ['current', 'Current page'], ['range', 'Range']], value: 'all' },
-      { k: 'range', label: 'Range', value: `1-${d.numPages}`, placeholder: 'z.B. 1-3, 5' },
-      { k: 'subset', label: 'Subset', type: 'select', options: [['all', 'All'], ['odd', 'Odd pages only'], ['even', 'Even pages only']], value: 'all' },
-      { k: 'fit', label: 'Size', type: 'select', options: [['fit', 'Fit to page'], ['actual', 'Actual size']], value: 'fit' },
-      { k: 'orient', label: 'Orientation', type: 'select', options: [['auto', 'Automatic'], ['portrait', 'Portrait'], ['landscape', 'Landscape']], value: 'auto' },
-      { k: 'color', label: 'Color', type: 'select', options: [['color', 'Color'], ['bw', 'Black and white']], value: 'color' },
-      { k: 'duplex', label: 'Double-sided', type: 'select', options: [['simplex', 'No'], ['longEdge', 'Long edge'], ['shortEdge', 'Short edge']], value: 'simplex' },
-      { k: 'annots', label: 'Print comments', type: 'checkbox', value: this.settings.printComments !== false },
-      { k: 'dpi', label: 'Quality', type: 'select', options: [[200, 'Normal (200 dpi)'], [300, 'High (300 dpi)'], [150, 'Draft (150 dpi)']], value: 200 },
-    ], { ok: 'Print', validate: (x) => { if (x.which !== 'range') return null; try { parseRange(x.range, d.numPages); return null; } catch (e) { return e.message; } } });
-    if (!r) return;
-    let pages = r.which === 'all' ? d.pages.map((_, i) => i) : r.which === 'current' ? [v.current] : parseRange(r.range, d.numPages);
-    if (r.subset !== 'all') pages = pages.filter((p) => (p + 1) % 2 === (r.subset === 'odd' ? 1 : 0));
-    if (!pages.length) throw new Error('No pages to print.');
-    const res = await busy('Printing document', async (progress) => {
-      let source = d;
-      let temp = null;
-      if (r.annots && d.allAnnots().length) { temp = new Doc({ name: d.name, bytes: await d.buildOutput({ noEncrypt: true }) }); const t = await temp.openPdf(temp.bytes); temp.pdf = t.pdf; source = temp; }
-      const out = [];
-      try {
-        for (let k = 0; k < pages.length; k++) {
-          const proxy = await source.pdf.getPage(pages[k] + 1);
-          const scale = +r.dpi / 72;
-          const vp = proxy.getViewport({ scale });
-          const c = document.createElement('canvas'); c.width = Math.ceil(vp.width); c.height = Math.ceil(vp.height);
-          const ctx = c.getContext('2d', { alpha: false });
-          if (r.color === 'bw') ctx.filter = 'grayscale(1)';
-          await proxy.render({ canvas: c, canvasContext: ctx, viewport: vp, intent: 'print', annotationMode: 2, annotationStorage: source.pdf.annotationStorage }).promise;
-          const base = proxy.getViewport({ scale: 1 });
-          out.push({ bytes: await canvasBytes(c, 'image/jpeg', 0.92), width: base.width, height: base.height });
-          c.width = 0;
-          progress((k + 1) / pages.length, `Page ${k + 1} of ${pages.length}`);
-        }
-      } finally { if (temp) temp.pdf.loadingTask.destroy(); }
-      const landscape = r.orient === 'landscape' || (r.orient === 'auto' && out[0].width > out[0].height);
-      return dp.print(out, { deviceName: r.deviceName, copies: r.copies, fit: r.fit, landscape, color: r.color === 'color', duplexMode: r.duplex });
-    });
-    if (res.ok) toast('Print job sent', 'ok'); else throw new Error(`Printing failed: ${res.reason || 'unbekannt'}`);
-  }
+  print(preset, o) { return printDocument(this, preset, o); }
 
   async properties() {
     const d = this.doc;
@@ -463,8 +609,13 @@ class App {
       ['File', d.path || d.name], ['Size', fmtSize(stat?.size ?? d.bytes.length)], ['PDF version', info.PDFFormatVersion], ['Pages', d.numPages], ['Page size', `${mm(p0.view[2] - p0.view[0])} x ${mm(p0.view[3] - p0.view[1])} mm`],
       ['Application', info.Creator || ''], ['PDF producer', info.Producer || ''], ['Security', d.security ? 'Password protection' : 'None'], ['Digitally signed', d.signed ? 'Yes' : 'No'], ['Form', info.IsAcroFormPresent ? 'Yes' : 'No'], ['Tagged', info.IsLinearized ? 'Linearized' : '-'],
     ].map(([a, b]) => h('tr', {}, h('th', {}, a), h('td', {}, String(b ?? '')))));
+    let fonts = [];
+    try { fonts = listFonts(await loadForEdit(d.bytes)); } catch (e) { console.warn('Fonts', e); }
+    const fontTable = h('details', { class: 'fonts-list', data: { fonts: String(fonts.length) } }, h('summary', {}, `Fonts (${fonts.length})`),
+      fonts.length ? h('table', { class: 'tbl' }, h('tr', {}, h('th', {}, 'Font'), h('th', {}, 'Type'), h('th', {}, 'Embedded')),
+        fonts.map((x) => h('tr', {}, h('td', {}, x.name), h('td', {}, fontKind(x.kind)), h('td', {}, x.embedded ? (x.subset ? 'Embedded subset' : 'Embedded') : 'Not embedded')))) : h('div', { class: 'empty' }, 'This document uses no fonts.'));
     const r = await formDialog('Document properties', [
-      { type: 'node', node: facts },
+      { type: 'node', node: facts }, { type: 'node', node: fontTable },
       { k: 'title', label: 'Title', value: info.Title || '' }, { k: 'author', label: 'Author', value: info.Author || '' }, { k: 'subject', label: 'Subject', value: info.Subject || '' }, { k: 'keywords', label: 'Keywords', value: info.Keywords || '' },
     ], { ok: 'Apply', wide: true });
     if (!r) return;
@@ -494,7 +645,7 @@ class App {
     await messageBox('About DocPilot', h('div', { style: { textAlign: 'center' } }, h('img', { src: 'assets/logo.svg', alt: '', style: { height: '64px', margin: '8px 0 14px' } }), h('div', {}, `Version ${await dp.version()}`), h('p', { style: { color: 'var(--ink2)' } }, 'Includes PDF.js, pdf-lib, Tesseract OCR and node-forge under their respective open-source licenses.')));
   }
   async shortcuts() {
-    const list = [['Ctrl+O', 'Open'], ['Ctrl+S', 'Save'], ['Ctrl+P', 'Print'], ['Ctrl+F', 'Find'], ['Ctrl+Shift+H', 'Find and replace'], ['Ctrl+Z / Y', 'Undo / Redo'], ['Ctrl+Plus / Minus', 'Zoom'], ['Ctrl+0 / 1 / 2', 'Page / 100% / Width'], ['V', 'Select'], ['H', 'Hand'], ['Z', 'Marquee zoom'], ['S', 'Sticky note'], ['U', 'Highlight'], ['N', 'Pencil'], ['X', 'Text box'], ['R', 'Rectangle'], ['Arrow keys, Page Up/Down', 'Navigation'], ['Del', 'Delete selection'], ['Esc', 'Cancel tool']];
+    const list = [['Ctrl+O', 'Open'], ['Ctrl+Shift+P', 'Search commands'], ['Ctrl+Shift+T', 'Reopen closed tab'], ['Ctrl+S', 'Save'], ['Ctrl+P', 'Print'], ['Ctrl+F', 'Find'], ['Ctrl+Shift+H', 'Find and replace'], ['Ctrl+Z / Y', 'Undo / Redo'], ['Ctrl+Plus / Minus', 'Zoom'], ['Ctrl+0 / 1 / 2', 'Page / 100% / Width'], ['V', 'Select'], ['H', 'Hand'], ['Z', 'Marquee zoom'], ['S', 'Sticky note'], ['U', 'Highlight'], ['N', 'Pencil'], ['X', 'Text box'], ['R', 'Rectangle'], ['Arrow keys, Page Up/Down', 'Navigation'], ['Del', 'Delete selection'], ['Esc', 'Cancel tool']];
     await messageBox('Keyboard shortcuts', h('table', { class: 'tbl' }, list.map(([a, b]) => h('tr', {}, h('th', {}, a), h('td', {}, b)))));
   }
 
@@ -606,6 +757,14 @@ class App {
   bindDrop() {
     const stop = (e) => { if (e.dataTransfer?.types?.includes('Files')) { e.preventDefault(); } };
     document.addEventListener('dragover', stop);
+    // While files are dragged over the window, the drop area of the home page lights up (dropping works anywhere).
+    let depth = 0;
+    const files = (e) => !!e.dataTransfer?.types?.includes('Files');
+    const done = () => { depth = 0; document.body.classList.remove('dragging-files'); };
+    document.addEventListener('dragenter', (e) => { if (files(e)) { depth++; document.body.classList.add('dragging-files'); } });
+    document.addEventListener('dragleave', (e) => { if (files(e) && --depth <= 0) done(); });
+    document.addEventListener('drop', done, true);
+    document.addEventListener('dragend', done);
     document.addEventListener('drop', async (e) => {
       if (!e.dataTransfer?.files?.length) return;
       e.preventDefault();

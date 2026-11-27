@@ -3,6 +3,7 @@ const { app, BrowserWindow, Menu, dialog, ipcMain, protocol, shell, clipboard, C
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const crypto = require('crypto');
 const { execFile, execFileSync } = require('child_process');
 const { buildMenu } = require('./menu');
 const { FontCatalog, wordDefaults } = require('./fonts');
@@ -90,7 +91,7 @@ function refreshMenu() {
 
 /**
  * Appearance from Preferences (General): 'light' (default), 'dark' or 'system' (same as Windows).
- * Applies to the menu bar, window frame and system dialogs; the interface itself is colored by styles.css.
+ * Applies to the menus, the window buttons and system dialogs; the interface itself is colored by styles.css.
  */
 function applyAppearance() {
   const v = settings().appearance;
@@ -98,16 +99,31 @@ function applyAppearance() {
   if (win) win.setBackgroundColor(nativeTheme.shouldUseDarkColors ? '#1b1c1f' : '#f3f4f6');
 }
 
+/**
+ * DocPilot draws its own title bar with the tabs (#topbar in styles.css, TITLEBAR px high). On Windows the system adds
+ * only the minimize, maximize and close buttons at the right, in the colors of the bar: these start values match
+ * --titlebar and --ink2 in styles.css, and the window reports the exact colors after every change of the appearance
+ * (dp:titlebar). On a Mac the three window buttons sit at the left of the bar.
+ */
+const TITLEBAR = 40;
+const COLOR = /^(#[0-9a-f]{3,8}|rgba?\([\d.,\s/%]+\))$/i;
+const titleBarColors = () => (nativeTheme.shouldUseDarkColors ? { color: '#141517', symbolColor: '#c0bdbb' } : { color: '#e9ebee', symbolColor: '#4a4647' });
+const windowState = () => ({ fullscreen: !!win && win.isFullScreen(), maximized: !!win && win.isMaximized() });
+const sendWindowState = () => { if (win) win.webContents.send('dp:window-state', windowState()); };
+
 function createWindow() {
   win = new BrowserWindow({
     width: 1440, height: 920, minWidth: 900, minHeight: 600, show: false,
     title: APP_NAME, backgroundColor: nativeTheme.shouldUseDarkColors ? '#1b1c1f' : '#f3f4f6',
     icon: path.join(__dirname, '..', 'assets', 'icon.ico'),
+    titleBarStyle: 'hidden',
+    ...(mac ? { trafficLightPosition: { x: 14, y: 13 } } : { titleBarOverlay: { ...titleBarColors(), height: TITLEBAR } }),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: true,
     },
   });
+  for (const ev of ['enter-full-screen', 'leave-full-screen', 'maximize', 'unmaximize']) win.on(ev, sendWindowState);
   const bounds = readJson('window.json', null);
   if (bounds && bounds.width) win.setBounds(bounds);
   if (bounds && bounds.maximized) win.maximize();
@@ -144,6 +160,12 @@ if (!app.requestSingleInstanceLock()) {
         const data = await fontCatalog().data(Number(fm[1])).catch(() => null);
         return data ? new Response(data, { headers: { 'content-type': 'font/ttf', 'cache-control': 'max-age=3600' } }) : new Response('not found', { status: 404 });
       }
+      // Pictures of recent files (home page): only the files of the thumbnail folder, addressed by their key.
+      const tm = /^__thumb\/([0-9a-f]{24})\.jpg$/.exec(rel);
+      if (tm) {
+        try { return new Response(await fs.promises.readFile(thumbFile(tm[1])), { headers: { 'content-type': 'image/jpeg', 'cache-control': 'no-cache' } }); }
+        catch { return new Response('not found', { status: 404 }); }
+      }
       const file = path.normalize(path.join(RENDERER_DIR, rel));
       if (!file.startsWith(RENDERER_DIR)) return new Response('forbidden', { status: 403 });
       try {
@@ -173,6 +195,20 @@ ipcMain.handle('dp:fullscreen', (_e, on) => {
   if (mac) { fullScreenWanted = target; win.once(target ? 'enter-full-screen' : 'leave-full-screen', () => { fullScreenWanted = null; }); }
   win.setFullScreen(target);
   return mac ? target : win.isFullScreen();
+});
+ipcMain.handle('dp:window-state', () => windowState());
+// Colors of the window buttons (Windows): those of DocPilot's title bar in the current appearance.
+ipcMain.handle('dp:titlebar', (_e, c) => {
+  if (!win || mac || !c || !COLOR.test(String(c.color).trim()) || !COLOR.test(String(c.symbolColor).trim())) return false;
+  win.setTitleBarOverlay({ color: String(c.color).trim(), symbolColor: String(c.symbolColor).trim(), height: TITLEBAR });
+  return true;
+});
+// The menu behind the ☰ button of the title bar: the menu bar's menu with all entries and shortcuts, below the button.
+ipcMain.handle('dp:menu', (_e, x, y) => {
+  const m = Menu.getApplicationMenu();
+  if (!win || !m) return false;
+  m.popup({ window: win, x: Math.max(0, Math.round(Number(x) || 0)), y: Math.max(0, Math.round(Number(y) || 0)) });
+  return true;
 });
 ipcMain.handle('dp:version', () => app.getVersion());
 ipcMain.handle('dp:policy', () => POLICY);
@@ -218,6 +254,31 @@ ipcMain.handle('dp:file-stat', async (_e, p) => {
   try { const s = await fs.promises.stat(p); return { size: s.size, mtime: s.mtimeMs, ctime: s.birthtimeMs }; } catch { return null; }
 });
 ipcMain.handle('dp:reveal', (_e, p) => shell.showItemInFolder(p));
+
+// Autosave: copies of documents with unsaved changes in the data folder (see src/autosave.js). The id is checked so
+// that it can only name a file in that folder.
+const autosaveDir = () => path.join(app.getPath('userData'), 'autosave');
+const autosaveFile = (id, ext) => { if (!/^[a-z0-9-]{1,80}$/i.test(String(id))) throw new Error('Invalid autosave id'); return path.join(autosaveDir(), `${id}.${ext}`); };
+ipcMain.handle('dp:autosave-write', async (_e, id, bytes, meta) => {
+  await fs.promises.mkdir(autosaveDir(), { recursive: true });
+  const tmp = `${autosaveFile(id, 'pdf')}.tmp`;
+  await fs.promises.writeFile(tmp, toBuf(bytes));
+  await fs.promises.rename(tmp, autosaveFile(id, 'pdf'));
+  await fs.promises.writeFile(autosaveFile(id, 'json'), JSON.stringify({ name: String(meta?.name || 'Document.pdf'), path: String(meta?.path || ''), time: Number(meta?.time) || Date.now() }));
+  return true;
+});
+ipcMain.handle('dp:autosave-remove', async (_e, id) => { for (const x of ['pdf', 'json']) await fs.promises.rm(autosaveFile(id, x), { force: true }); return true; });
+ipcMain.handle('dp:autosave-read', async (_e, id) => { try { return new Uint8Array(await fs.promises.readFile(autosaveFile(id, 'pdf'))); } catch { return null; } });
+ipcMain.handle('dp:autosave-list', async () => {
+  let names = [];
+  try { names = await fs.promises.readdir(autosaveDir()); } catch { return []; }
+  const out = [];
+  for (const n of names.filter((x) => x.endsWith('.json'))) {
+    const id = n.slice(0, -5);
+    try { const meta = JSON.parse(await fs.promises.readFile(autosaveFile(id, 'json'), 'utf8')); if (fs.existsSync(autosaveFile(id, 'pdf'))) out.push({ id, ...meta }); } catch { /* damaged copy: skip */ }
+  }
+  return out.sort((a, b) => a.time - b.time);
+});
 // Links from documents: behavior according to the preference (ask, always allow, block).
 ipcMain.handle('dp:open-external', async (_e, url) => {
   if (!/^(https?:|mailto:)/i.test(url)) return false;
@@ -242,16 +303,44 @@ ipcMain.handle('dp:open-path', async (_e, p) => {
   return shell.openPath(p);
 });
 
-ipcMain.handle('dp:recent-get', () => readJson('recent.json', []).slice(0, recentCount()).map((r) => ({ ...r, exists: fs.existsSync(r.path) })));
+// Pictures of the first page of recent files for the home page: JPEG files in <userData>/thumbs, named after the
+// file's path, served as app://docpilot/__thumb/<key>.jpg. A picture counts while the file has not changed since.
+const thumbDir = () => path.join(app.getPath('userData'), 'thumbs');
+const thumbKey = (p) => crypto.createHash('sha1').update(String(p).toLowerCase()).digest('hex').slice(0, 24);
+const thumbFile = (key) => path.join(thumbDir(), `${key}.jpg`);
+const dropThumbs = (list) => { for (const r of list) if (r.thumb) fs.rmSync(thumbFile(thumbKey(r.path)), { force: true }); };
+ipcMain.handle('dp:recent-get', () => readJson('recent.json', []).slice(0, recentCount()).map((r) => {
+  let st = null;
+  try { st = fs.statSync(r.path); } catch { /* moved or deleted */ }
+  const fresh = st && r.thumb && r.thumbOf >= st.mtimeMs - 2000 && fs.existsSync(thumbFile(thumbKey(r.path)));
+  return { path: r.path, name: r.name, opened: r.opened, exists: !!st, size: st ? st.size : 0, thumb: fresh ? `app://docpilot/__thumb/${thumbKey(r.path)}.jpg?v=${Math.round(r.thumbOf)}` : null };
+}));
 ipcMain.handle('dp:recent-add', (_e, p) => {
-  const list = readJson('recent.json', []).filter((r) => r.path.toLowerCase() !== p.toLowerCase());
-  list.unshift({ path: p, name: path.basename(p), opened: Date.now() });
+  const all = readJson('recent.json', []);
+  const old = all.find((r) => r.path.toLowerCase() === p.toLowerCase());
+  const list = all.filter((r) => r !== old);
+  list.unshift({ ...(old?.thumb ? { thumb: old.thumb, thumbOf: old.thumbOf } : {}), path: p, name: path.basename(p), opened: Date.now() });
+  dropThumbs(list.slice(30));
   writeJson('recent.json', list.slice(0, 30));
   refreshMenu();
 });
 ipcMain.handle('dp:recent-remove', (_e, p) => {
-  writeJson('recent.json', p ? readJson('recent.json', []).filter((r) => r.path !== p) : []);
+  const all = readJson('recent.json', []);
+  dropThumbs(p ? all.filter((r) => r.path === p) : all);
+  writeJson('recent.json', p ? all.filter((r) => r.path !== p) : []);
   refreshMenu();
+});
+ipcMain.handle('dp:recent-thumb', async (_e, p, bytes) => {
+  const list = readJson('recent.json', []);
+  const r = list.find((x) => x.path.toLowerCase() === String(p).toLowerCase());
+  const b = bytes ? toBuf(bytes) : null;
+  if (!r || !b || b.length > 2e6 || b[0] !== 0xff || b[1] !== 0xd8) return null;
+  await fs.promises.mkdir(thumbDir(), { recursive: true });
+  await fs.promises.writeFile(thumbFile(thumbKey(r.path)), b);
+  const st = await fs.promises.stat(r.path).catch(() => null);
+  r.thumb = true; r.thumbOf = st ? st.mtimeMs : Date.now();
+  writeJson('recent.json', list);
+  return `app://docpilot/__thumb/${thumbKey(r.path)}.jpg?v=${Math.round(r.thumbOf)}`;
 });
 ipcMain.handle('dp:settings-get', () => readJson('settings.json', {}));
 ipcMain.handle('dp:settings-set', (_e, s) => { writeJson('settings.json', s); applyAppearance(); refreshMenu(); return true; });

@@ -361,7 +361,7 @@ export class Overlay {
   toolDown(e, i) {
     if (e.button !== 0) return;
     const t = this.tool;
-    const p0 = this.viewer.toPdf(i, e.clientX, e.clientY);
+    const p0 = this.snapAt(i, this.viewer.toPdf(i, e.clientX, e.clientY));
     if (CLICK_POLY.has(t)) { this.polyClick(e, i, p0); return; }
     if (t === 'ink') { this.inkDraw(e, i, p0); return; }
     if (t === 'eraser') { this.erase(e, i, p0); return; }
@@ -380,7 +380,7 @@ export class Overlay {
     const t = this.tool;
     const n = this.viewer.node(i);
     const layer = e.currentTarget;
-    const lineMode = t === 'line' || t === 'arrow' || t.startsWith('measure-dist');
+    const lineMode = t === 'line' || t === 'arrow' || t === 'fs-line' || t.startsWith('measure-dist');
     const pv = lineMode ? s('svg', { style: 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible' }) : h('div', { class: 'sel-frame' });
     const ln = lineMode ? s('line', { stroke: '#0e7c86', 'stroke-width': 2 }) : null;
     if (ln) pv.append(ln);
@@ -392,10 +392,11 @@ export class Overlay {
       p1 = this.viewer.toPdf(i, m.clientX, m.clientY);
       let x = m.clientX - r0.left; let y = m.clientY - r0.top;
       if (m.shiftKey && lineMode) { const dx = x - x0; const dy = y - y0; if (Math.abs(dx) > Math.abs(dy)) y = y0; else x = x0; p1 = this.viewer.viewport(i).convertToPdfPoint(x, y); }
+      else if (t.startsWith('measure-')) { const q = this.snapAt(i, p1); if (q !== p1) { p1 = q; [x, y] = this.viewer.viewport(i).convertToViewportPoint(q[0], q[1]); } }
       if (lineMode) { ln.setAttribute('x1', x0); ln.setAttribute('y1', y0); ln.setAttribute('x2', x); ln.setAttribute('y2', y); }
       else Object.assign(pv.style, { left: `${Math.min(x0, x)}px`, top: `${Math.min(y0, y)}px`, width: `${Math.abs(x - x0)}px`, height: `${Math.abs(y - y0)}px` });
     }, async (up) => {
-      pv.remove();
+      pv.remove(); this.showSnap(i, null);
       const moved = Math.hypot(up.clientX - e.clientX, up.clientY - e.clientY) > 4;
       const rect = [Math.min(p0[0], p1[0]), Math.min(p0[1], p1[1]), Math.max(p0[0], p1[0]), Math.max(p0[1], p1[1])];
       try { await this.finishRect(t, i, rect, moved, p0, p1, e); } catch (err) { errToast(err); }
@@ -516,9 +517,30 @@ export class Overlay {
     const vp = this.viewer.viewport(this.poly.page);
     this.poly.line.setAttribute('points', [...this.poly.pts, ...(extra ? [extra] : [])].map((q) => vp.convertToViewportPoint(q[0], q[1]).join(',')).join(' '));
   }
-  polyHover(e, i) { if (this.poly && this.poly.page === i) this.drawPoly(this.viewer.toPdf(i, e.clientX, e.clientY)); }
+  polyHover(e, i) {
+    const p = this.snapAt(i, this.viewer.toPdf(i, e.clientX, e.clientY));
+    if (this.poly && this.poly.page === i) this.drawPoly(p);
+  }
+  /** Measure tools snap to the lines and points drawn on the page (endpoints, midpoints, intersections, lines). */
+  snapAt(i, p) {
+    if (!this.tool?.startsWith('measure-')) return p;
+    const r = this.app.tools.snapFor(i, p, 8 / this.viewer.scale);
+    this.showSnap(i, r);
+    return r ? r.point : p;
+  }
+  showSnap(i, r) {
+    const n = this.viewer.node(i);
+    if (!n) return;
+    let m = n.el.querySelector('.snap-mark');
+    if (!r) { if (m) m.hidden = true; return; }
+    if (!m) { m = h('div', { class: 'snap-mark' }); n.el.append(m); }
+    const [x, y] = this.viewer.viewport(i).convertToViewportPoint(r.point[0], r.point[1]);
+    Object.assign(m.style, { left: `${x}px`, top: `${y}px` });
+    m.dataset.kind = r.kind; m.title = r.kind; m.hidden = false;
+  }
   finishPoly() {
     if (!this.poly) return;
+    this.showSnap(this.poly.page, null);
     const { page, pts, svg } = this.poly;
     this.poly = null;
     svg.remove();

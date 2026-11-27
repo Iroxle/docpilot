@@ -30,7 +30,7 @@ export async function pageInfo(doc, i, edit) {
   const content = await doc.pageText(i);
   const boxes = textBoxes(content);
   let images = []; let items = [];
-  try { items = interpret(edit.getPage(i)).items; } catch { /* defekter Inhalt */ }
+  try { items = interpret(edit.getPage(i)).items; } catch { /* damaged content */ }
   const [x0, y0, x1, y1] = doc.page(i).view;
   const area = Math.max(1, (x1 - x0) * (y1 - y0));
   // Small images (logos, icons) do not count. Pieces of a split scan always count, even narrow
@@ -51,7 +51,7 @@ export async function pageInfo(doc, i, edit) {
   // Only count drawn shapes where necessary (page without text and without a large image): it takes time.
   let paths = 0;
   if (!boxes.length && imageShare < 0.2) {
-    try { const ol = await doc.page(i).getOperatorList(); paths = ol.fnArray.filter((f) => f === pdfjs.OPS.constructPath).length; } catch { /* egal */ }
+    try { const ol = await doc.page(i).getOperatorList(); paths = ol.fnArray.filter((f) => f === pdfjs.OPS.constructPath).length; } catch { /* not needed */ }
   }
   // For the duplicate text check: which text lies above which image (drawing order).
   const layers = { images: big, texts: items.map((o, k) => ({ o, k })).filter(({ o }) => o.kind === 'text') };
@@ -380,8 +380,9 @@ export async function layoutPage(data, viewport, G) {
         const a = viewport.convertToPdfPoint(w.box[0], l.base); const c = viewport.convertToPdfPoint(w.box[2], l.base);
         // Skewed page (straightened for reading): the word gets the start point, length and direction of its
         // line in the skewed image and is later written rotated. This way the text lies exactly over the image.
-        if (viewport.skewed) words.push({ text: w.text, x: a[0], y: a[1], width: Math.hypot(c[0] - a[0], c[1] - a[1]), height: px / viewport.scale, line: k, par, angle: Math.atan2(c[1] - a[1], c[0] - a[0]) });
-        else words.push({ text: w.text, x: Math.min(a[0], c[0]), y: Math.min(a[1], c[1]), width: Math.abs(c[0] - a[0]), height: px / viewport.scale, line: k, par });
+        // conf: how sure the recognition was (0 to 100), for the review of recognized text.
+        if (viewport.skewed) words.push({ text: w.text, x: a[0], y: a[1], width: Math.hypot(c[0] - a[0], c[1] - a[1]), height: px / viewport.scale, line: k, par, angle: Math.atan2(c[1] - a[1], c[0] - a[0]), conf: w.conf });
+        else words.push({ text: w.text, x: Math.min(a[0], c[0]), y: Math.min(a[1], c[1]), width: Math.abs(c[0] - a[0]), height: px / viewport.scale, line: k, par, conf: w.conf });
       }
     }
   });

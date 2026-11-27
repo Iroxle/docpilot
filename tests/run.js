@@ -70,6 +70,25 @@ async function invoiceFixture(name) {
   return file(name);
 }
 
+/**
+ * Form block that DocPilot has already set once, as in a saved document: bold labels, regular values in a second
+ * column, a bold label with its value right after it, all in one editor block; below the first two lines lies what is
+ * left of the old text (shifts without glyphs, as removeTextItems leaves them). All names invented.
+ */
+async function editedBlockFixture(name) {
+  const d = await PDFDocument.create();
+  const h = await d.embedFont(StandardFonts.Helvetica); const hb = await d.embedFont(StandardFonts.HelveticaBold);
+  const pg = d.addPage([595, 842]);
+  pg.node.set(PDFName.of('Resources'), d.context.obj({ Font: { F1: h.ref, F2: hb.ref } }));
+  const parts = [['Contract holder', 72, 720, hb], ['Name / First name', 72, 709, hb], ['Muster Anna', 190, 709, h], ['Street', 72, 698, hb],
+    ['Example Road 5', 190, 698, h], ['Customer no.:', 72, 687, hb], ['4711', 72 + hb.widthOfTextAtSize('Customer no.: ', 9), 687, h]];
+  const op = (s, x, y, f, shift) => `BT /${f === hb ? 'F2' : 'F1'} 9 Tf 1 0 0 1 ${x} ${y} Tm ${shift ? `[${(-f.widthOfTextAtSize(s, 1000)).toFixed(3)}] TJ` : `(${s}) Tj`} ET`;
+  const raw = [...parts.slice(0, 3).map((p) => op(...p, true)), '/DPEdit <</Id (e1fixture)>> BDC', ...parts.map((p) => op(...p, false)), 'EMC'].join('\n');
+  pg.node.set(PDFName.of('Contents'), d.context.register(d.context.flateStream(Buffer.from(raw, 'latin1'))));
+  fs.writeFileSync(file(name), await d.save());
+  return file(name);
+}
+
 (async () => {
   pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
   const app = await electron.launch({
@@ -80,7 +99,7 @@ async function invoiceFixture(name) {
   const page = await app.firstWindow();
   await page.setViewportSize?.({ width: 1440, height: 900 }).catch(() => {});
   const errors = [];
-  page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
+  page.on('pageerror', (e) => errors.push(`pageerror: ${e.message} ${(e.stack || '').split('\n').slice(1, 3).join(' ').trim()}`));
   page.on('console', (m) => { if (m.type() === 'error') errors.push(`console: ${m.text()}`); });
   await page.waitForFunction(() => !!window.__app);
 
@@ -98,6 +117,8 @@ async function invoiceFixture(name) {
     const tag = await page.$eval(sel, (e) => (e.type === 'checkbox' ? 'chk' : e.tagName));
     if (tag === 'SELECT') await page.selectOption(sel, String(v)); else if (tag === 'chk') await page.setChecked(sel, !!v); else await page.fill(sel, String(v));
   };
+  /** Clicks a button of a message box (e.g. "Update", "Remove"). */
+  const choose = async (label) => { await page.waitForSelector('.scrim [role="alertdialog"]'); await page.click(`.scrim [role="alertdialog"] .f .btn:text-is("${label}")`); await wait(150); };
   const dialog = async (vals) => { await page.waitForSelector('.scrim'); for (const [k, v] of Object.entries(vals)) await field(k, v); await ok(); };
   const rendered = (i = 0) => page.waitForFunction((n) => { const p = window.__app.viewer.node(n); return p && p.layers && p.textLayer && !p.task && p.stale === false && !!p.layers.text.querySelector('.endOfContent'); }, i, { timeout: 30000 });
   const fitPage = async () => { await page.evaluate(() => { window.__app.viewer.setZoom('page'); window.__app.viewer.goto(0, { noHistory: true }); }); await wait(350); await rendered(); await wait(100); };
@@ -342,6 +363,44 @@ async function invoiceFixture(name) {
     assert.equal(d.getForm().getTextField('vorname').getText(), 'Fritz Muster');
     await closeAll();
   });
+  step('Check boxes and radio buttons show their state on the page, also after a click', async () => {
+    const d = await PDFDocument.create();
+    const pg = d.addPage([595, 842]);
+    const form = d.getForm();
+    const agree = form.createCheckBox('agree'); agree.addToPage(pg, { x: 72, y: 600, width: 22, height: 22 }); agree.check();
+    form.createCheckBox('news').addToPage(pg, { x: 72, y: 560, width: 22, height: 22 });
+    const size = form.createRadioGroup('size');
+    size.addOptionToPage('S', pg, { x: 72, y: 520, width: 22, height: 22 }); size.addOptionToPage('L', pg, { x: 120, y: 520, width: 22, height: 22 }); size.select('L');
+    fs.writeFileSync(file('boxes.pdf'), await d.save());
+    await openFile(file('boxes.pdf'));
+    await page.waitForSelector('.annotationLayer input[name="news"]'); await wait(300);
+    // Share of dark pixels in the middle of a field, measured in a screenshot of the window: what the user really sees.
+    const ink = async (name, k = 0) => {
+      const box = await page.$$eval(`.annotationLayer input[name="${name}"]`, (l, n) => { const r = l.map((e) => e.closest('section').getBoundingClientRect()).sort((a, b) => a.left - b.left)[n]; return { x: r.left, y: r.top, width: r.width, height: r.height }; }, k);
+      const png = await page.screenshot({ clip: { x: box.x + box.width * 0.22, y: box.y + box.height * 0.22, width: box.width * 0.56, height: box.height * 0.56 } });
+      return page.evaluate(async (b64) => {
+        const bmp = await window.createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
+        const c = new window.OffscreenCanvas(bmp.width, bmp.height); const g = c.getContext('2d'); g.drawImage(bmp, 0, 0);
+        const px = g.getImageData(0, 0, c.width, c.height).data; let dark = 0;
+        for (let i = 0; i < px.length; i += 4) if (px[i] * 0.3 + px[i + 1] * 0.59 + px[i + 2] * 0.11 < 110) dark++;
+        return dark / (px.length / 4);
+      }, png.toString('base64'));
+    };
+    const shows = async (name, k, on) => { const v = await ink(name, k); assert.ok(on ? v > 0.05 : v < 0.01, `${name}${k ? ` #${k + 1}` : ''} ${on ? 'shows its mark' : 'is empty'} (dark share ${v.toFixed(3)})`); };
+    await shows('agree', 0, true); await shows('news', 0, false); await shows('size', 0, false); await shows('size', 1, true);
+    await shot('05-check-boxes');
+    // A click changes what the page shows.
+    await page.click('.annotationLayer input[name="news"]'); await page.click('.annotationLayer input[name="agree"]');
+    await page.$$eval('.annotationLayer input[name="size"]', (l) => l.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left)[0].click());
+    await wait(200);
+    await shows('agree', 0, false); await shows('news', 0, true); await shows('size', 0, true); await shows('size', 1, false);
+    // Still right after the page is drawn again (zoom), and saved with the new values.
+    await page.evaluate(() => window.__app.viewer.setZoom(1.5)); await rendered(); await page.waitForSelector('.annotationLayer input[name="news"]'); await wait(300);
+    await shows('agree', 0, false); await shows('news', 0, true); await shows('size', 0, true);
+    const saved = await PDFDocument.load(await saveAs('boxes-saved.pdf'));
+    assert.deepEqual([saved.getForm().getCheckBox('agree').isChecked(), saved.getForm().getCheckBox('news').isChecked(), saved.getForm().getRadioGroup('size').getSelected()], [false, true, 'S']);
+    await closeAll();
+  });
   step('Create form field', async () => {
     await openFile(file('a.pdf'));
     await group('form');
@@ -395,6 +454,21 @@ async function invoiceFixture(name) {
     const t = await textOf(await open(buf), 2);
     assert.match(t, /INTERNAL/); assert.match(t, /Head 2/); assert.match(t, /X-000002/);
     await rendered(); await wait(300); await shot('08-watermark');
+    await closeAll();
+  });
+  step('Header & footer and watermark: update and remove', async () => {
+    await openFile(file('a-wm.pdf'));
+    await page.evaluate(() => { window.__app.tools.headerFooter(); });
+    await choose('Update');
+    await page.waitForSelector('.scrim [data-field="center"]');
+    assert.equal(await page.inputValue('.scrim [data-field="center"]'), 'Head {page}', 'the dialog opens with the settings of the header');
+    await dialog({ center: 'Changed {page}' });
+    await page.evaluate(() => { window.__app.tools.watermark(); });
+    await choose('Remove'); await idle(); await wait(300);
+    const buf = await saveAs('a-wm2.pdf');
+    const t = await textOf(await open(buf), 2);
+    assert.doesNotMatch(t, /INTERNAL/); assert.doesNotMatch(t, /Head 2/);
+    assert.match(t, /Changed 2/); assert.match(t, /X-000002/); assert.match(t, /DocPilot test document page 2/);
     await closeAll();
   });
   step('Redact: content really gone', async () => {
@@ -903,7 +977,12 @@ async function invoiceFixture(name) {
     // --- "Appearance" choice under Preferences > General ---
     // Measures the text color against the background behind it: brightness of the background (0 black, 1 white) and contrast.
     const probe = (sels) => page.evaluate((list) => {
-      const parse = (c) => { const m = /rgba?\(([^)]+)\)/.exec(c); if (!m) return [0, 0, 0, 1]; const p = m[1].split(/[\s,/]+/).filter(Boolean).map(Number); return [p[0], p[1], p[2], p.length > 3 ? p[3] : 1]; };
+      // Colors come as rgb()/rgba(), mixed colors (color-mix) as color(srgb r g b / a) with values from 0 to 1.
+      const parse = (c) => {
+        const s = /color\(srgb ([^)]+)\)/.exec(c);
+        if (s) { const p = s[1].split(/[\s/]+/).filter(Boolean).map(Number); return [p[0] * 255, p[1] * 255, p[2] * 255, p.length > 3 ? p[3] : 1]; }
+        const m = /rgba?\(([^)]+)\)/.exec(c); if (!m) return [0, 0, 0, 1]; const p = m[1].split(/[\s,/]+/).filter(Boolean).map(Number); return [p[0], p[1], p[2], p.length > 3 ? p[3] : 1];
+      };
       const lum = ([r, g, b]) => { const f = (v) => { const x = v / 255; return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4; }; return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b); };
       const bgOf = (el) => { for (let e = el; e; e = e.parentElement) { const c = parse(getComputedStyle(e).backgroundColor); if (c[3] > 0.95) return c; } return [255, 255, 255, 1]; };
       return list.map((sel) => { const el = document.querySelector(sel); if (!el) return { sel, missing: true }; const a = lum(parse(getComputedStyle(el).color)); const b = lum(bgOf(el)); return { sel, bg: Math.round(b * 1000) / 1000, contrast: Math.round(((Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05)) * 10) / 10 }; });
@@ -926,7 +1005,7 @@ async function invoiceFixture(name) {
     assert.equal((await page.evaluate(() => window.dp.settingsGet())).appearance, 'dark', 'gespeichert');
     // Dokumentansicht: Tabs, Werkzeugleiste, Werkzeugfenster, Seitenleiste, Seitensteuerung.
     await group('edit'); await page.waitForSelector('.eb'); await wait(200);
-    await allDark('document view', ['#topbar .brand span', '#tabs .tab.active', '#doc-toolbar .gb', '#left-panel .lp-head', '#left-panel .lp-item', '#left-panel .lp-sub', '#page-controls input', '#page-controls select', '#page-controls .of', '.cm .au', '.cm .act input']);
+    await allDark('document view', ['#tabs .tab.active', '#tabs .tab:not(.active) .name', '#cmd-search .ph', '#cmd-search kbd', '#doc-toolbar .gb', '#left-panel .lp-head', '#left-panel .lp-item', '#left-panel .lp-sub', '#page-controls input', '#page-controls select', '#page-controls .of', '.cm .au', '.cm .act input']);
     await allDark('icons', ['#right-rail .ib:not(.active)', '#quick-tools .ib:not(.active)', '#left-panel .lp-item .ic'], 3);
     // The page stays white like paper, only the background around the page is dark.
     const paper = await page.evaluate(() => { const n = window.__app.viewer.node(0); const d = n.canvas.getContext('2d').getImageData(6, 6, 1, 1).data; const lumOf = (c) => { const m = /rgba?\(([^)]+)\)/.exec(c)[1].split(/[\s,/]+/).map(Number); return (0.2126 * m[0] + 0.7152 * m[1] + 0.0722 * m[2]) / 255; }; return { page: getComputedStyle(n.el).backgroundColor, pixel: [d[0], d[1], d[2]], around: lumOf(getComputedStyle(document.querySelector('#viewer-wrap')).backgroundColor) }; });
@@ -970,7 +1049,9 @@ async function invoiceFixture(name) {
     await page.evaluate(() => window.__app.showHome()); await wait(500);
     await allDark('home page', ['.home-hero h1', '.home-hero p', '.tool-card b', '.tool-card small', 'h2.sec']);
     await allDark('home page, icon', ['.tool-card .tc-ic'], 3);
-    if (await page.$('.recent .row')) await allDark('Recently opened', ['.recent .row', '.recent .row .p']);
+    if (await page.$('.recent-card')) await allDark('Recent files', ['.recent-card .rc-name', '.recent-card .rc-meta']);
+    await allDark('drop area', ['.drop-zone h1', '.drop-zone p']);
+    const [btn] = await probe(['#home-open']); assert.ok(btn.contrast >= 4.5, `text on the accent button is readable: ${btn.contrast}`);
     const logo = await page.$eval('.home-hero img', (e) => getComputedStyle(e).backgroundColor);
     assert.equal(logo, 'rgb(255, 255, 255)', 'logo sits on a light plate');
     await shot('21-dark-home');
@@ -992,11 +1073,165 @@ async function invoiceFixture(name) {
     assert.equal(await app.evaluate(({ nativeTheme }) => nativeTheme.themeSource), 'light');
     const back = await page.$eval('#page-controls input', (e) => getComputedStyle(e).backgroundColor);
     assert.equal(back, 'rgb(255, 255, 255)', 'Light: fields white again');
-    assert.equal(await page.$eval('#topbar', (e) => getComputedStyle(e).backgroundColor), 'rgb(255, 255, 255)');
+    assert.equal(await page.$eval('#topbar', (e) => getComputedStyle(e).backgroundColor), 'rgb(233, 235, 238)', 'title bar light again');
     await page.emulateMedia({ colorScheme: null });
     await closeAll();
     // With the document, the note window that belonged to it closes too.
     assert.equal(await page.$('.note-pop'), null, 'no note window stays open after closing');
+  });
+  step('Title bar: tabs, menu behind ☰ with all entries, search field, shortcuts, window buttons, many tabs', async () => {
+    const MAC = process.platform === 'darwin';
+    await openFile(file('a.pdf'));
+    // The tabs are in the title bar: the window has no frame of its own, and empty parts of the bar move the window.
+    assert.deepEqual(await page.$$eval('#topbar #tabs .tab', (l) => l.map((t) => t.dataset.view || 'doc')), ['home', 'tools', 'doc']);
+    assert.ok(await page.$('#tabs .tab.active[data-doc]'), 'the document tab is active');
+    assert.equal(await page.$eval('#topbar', (e) => getComputedStyle(e).getPropertyValue('-webkit-app-region') || getComputedStyle(e).webkitAppRegion), 'drag');
+    if (!MAC) {
+      // Windows: room for minimize, maximize and close at the right of the bar.
+      const room = await page.evaluate(() => ({ overlay: !!navigator.windowControlsOverlay?.visible, pad: parseFloat(getComputedStyle(document.querySelector('#topbar')).paddingRight), right: document.querySelector('#top-actions').getBoundingClientRect().right }));
+      assert.ok(room.overlay && room.pad > 80 && room.right < 1440 - 80, `room for the window buttons: ${JSON.stringify(room)}`);
+      // ☰ opens the menu of the menu bar, with all its entries, below the button; F10 and Alt on its own open it too.
+      assert.deepEqual(await app.evaluate(({ Menu }) => Menu.getApplicationMenu().items.map((i) => i.label)), ['File', 'Edit', 'View', 'E-Sign', 'Window', 'Help']);
+      assert.ok(await app.evaluate(({ Menu }) => Menu.getApplicationMenu().items[0].submenu.items.some((i) => i.label === 'Save as...' && /Shift\+S/.test(i.accelerator))), 'entries keep their shortcuts');
+      await app.evaluate(({ Menu }) => { const m = Menu.getApplicationMenu(); globalThis.__popups = []; m.popup = (o) => globalThis.__popups.push({ x: o.x, y: o.y }); });
+      const popups = async (n) => { for (let k = 0; k < 40; k++) { const p = await app.evaluate(() => globalThis.__popups); if (p.length >= n) return p; await wait(50); } return app.evaluate(() => globalThis.__popups); };
+      await page.click('#menu-btn');
+      const [p1] = await popups(1);
+      const btn = await page.$eval('#menu-btn', (b) => { const r = b.getBoundingClientRect(); return { left: r.left, bottom: r.bottom }; });
+      assert.ok(p1 && Math.abs(p1.x - btn.left) <= 2 && p1.y >= btn.bottom && p1.y < btn.bottom + 10, `menu below the button: ${JSON.stringify([p1, btn])}`);
+      await page.focus('#viewer'); await page.keyboard.press('F10'); assert.equal((await popups(2)).length, 2, 'F10 opens the menu');
+      await page.keyboard.press('Alt'); assert.equal((await popups(3)).length, 3, 'Alt on its own opens the menu');
+      await page.keyboard.press('Alt+ArrowLeft'); await wait(150); assert.equal((await popups(4)).length, 3, 'Alt with another key does not');
+      await app.evaluate(({ Menu }) => { delete Menu.getApplicationMenu().popup; });
+    } else assert.equal(await page.$('#menu-btn'), null, 'a Mac keeps its menu bar at the top of the screen');
+    // The search field in the middle opens the command search right below it; typing on it starts the search.
+    await page.click('#cmd-search'); await page.waitForSelector('.palette [data-palette-input]');
+    const [fx, px] = await page.evaluate(() => { const c = (e) => { const r = e.getBoundingClientRect(); return r.left + r.width / 2; }; return [c(document.querySelector('#cmd-search')), c(document.querySelector('.palette'))]; });
+    assert.ok(Math.abs(fx - px) < 30, `command search below the field: ${fx} / ${px}`);
+    await page.keyboard.press('Escape'); await page.waitForSelector('.palette', { state: 'detached' });
+    await page.focus('#cmd-search'); await page.keyboard.press('w');
+    await page.waitForSelector('.palette [data-palette-input]');
+    assert.equal(await page.$eval('.palette [data-palette-input]', (e) => e.value), 'w');
+    await page.keyboard.press('Escape'); await page.waitForSelector('.palette', { state: 'detached' });
+    // The menu's shortcuts still work without a menu bar: command search and Preferences. The keys are sent as input
+    // of the window (key presses from Playwright never reach the menu's shortcuts, with or without a frame); the
+    // shortcuts only act in the active window, and a test window started in the background soon loses that.
+    const sendKey = (keyCode, modifiers) => app.evaluate(async ({ BrowserWindow }, [k, m]) => {
+      const w = BrowserWindow.getAllWindows().find((x) => x.webContents.getURL().startsWith('app://'));
+      w.focus(); await new Promise((r) => setTimeout(r, 150));
+      for (const type of ['keyDown', 'keyUp']) w.webContents.sendInputEvent({ type, keyCode: k, modifiers: m });
+    }, [keyCode, modifiers]);
+    const mod = MAC ? 'meta' : 'control';
+    await page.focus('#viewer');
+    await sendKey('P', [mod, 'shift']); await page.waitForSelector('.palette');
+    await page.keyboard.press('Escape'); await page.waitForSelector('.palette', { state: 'detached' });
+    await sendKey('K', [mod]); await page.waitForSelector('.dlg.pref');
+    await page.click('.dlg.pref .btn:not(.primary)'); await wait(100);
+    // With few tabs the search field is in the middle of the window; more tabs push it aside, the tabs stay readable.
+    await page.evaluate(() => window.__app.showHome()); await wait(300);
+    const mid = await page.$eval('#cmd-search', (e) => { const r = e.getBoundingClientRect(); return r.left + r.width / 2 - window.innerWidth / 2; });
+    assert.ok(Math.abs(mid) < 3, `search field in the middle: ${mid}`);
+    for (let k = 1; k <= 7; k++) { fs.copyFileSync(file('a.pdf'), file(`Quarterly report part ${k}.pdf`)); await page.evaluate((x) => window.__app.openPath(x), file(`Quarterly report part ${k}.pdf`)); }
+    await rendered(); await wait(300);
+    const bar = await page.evaluate(() => {
+      const r = (e) => e.getBoundingClientRect();
+      const tabs = [...document.querySelectorAll('#tabs .tab')]; const s = r(document.querySelector('#cmd-search'));
+      const box = r(document.querySelector('#tabs'));
+      return { search: [s.left, s.right, s.width], tabsRight: box.right, actions: r(document.querySelector('#top-actions')).left, narrowest: Math.min(...tabs.map((t) => r(t).width)), active: (() => { const a = r(document.querySelector('#tabs .tab.active')); return a.left >= box.left - 1 && a.right <= box.right + 1; })() };
+    });
+    assert.ok(bar.search[2] >= 180 && bar.search[0] >= bar.tabsRight && bar.search[1] <= bar.actions, `search field between tabs and actions: ${JSON.stringify(bar)}`);
+    assert.ok(bar.narrowest >= 60, `tabs stay readable: ${JSON.stringify(bar)}`);
+    assert.ok(bar.active, 'the active tab is in view');
+    await shot('22-title-bar');
+    await closeAll();
+  });
+  step('Home page: drop area, recent files as pictures of the first page, colored tool tiles', async () => {
+    fs.copyFileSync(file('a.pdf'), file('gone.pdf'));
+    await closeAll();
+    for (const f of ['gone.pdf', 'a.pdf']) await openFile(file(f));
+    await closeAll(); fs.rmSync(file('gone.pdf'));
+    await page.evaluate(() => window.__app.showHome()); await page.waitForSelector('#home-drop');
+    assert.equal(await page.textContent('#home-drop h1'), 'Drop a PDF here or open one');
+    // The recent files show a picture of their first page; the card shows the name, the full path only as a tooltip.
+    await page.waitForFunction((p) => [...document.querySelectorAll('.recent-card')].some((c) => c.dataset.path === p && c.querySelector('img')?.naturalWidth > 0), file('a.pdf'), { timeout: 30000 });
+    const card = await page.$$eval('.recent-card', (l, p) => {
+      const c = l.find((x) => x.dataset.path === p); const img = c.querySelector('img');
+      // The blue rectangle of the test page (x 72-292, y 420-540 on an A4 page) is in the picture.
+      const cv = document.createElement('canvas'); cv.width = img.naturalWidth; cv.height = img.naturalHeight; cv.getContext('2d').drawImage(img, 0, 0);
+      const [r, g, b] = cv.getContext('2d').getImageData(Math.round(img.naturalWidth * 182 / 595), Math.round(img.naturalHeight * (842 - 480) / 842), 1, 1).data;
+      return { title: c.title, text: c.textContent, w: img.naturalWidth, h: img.naturalHeight, first: l[0] === c, blue: b > r + 60 && b > g };
+    }, file('a.pdf'));
+    assert.equal(card.title, file('a.pdf'), 'the full path is the tooltip');
+    assert.ok(card.text.startsWith('a.pdf') && !card.text.includes(path.dirname(file('a.pdf'))), `only the name is shown: ${card.text}`);
+    assert.ok(card.first, 'the file opened last comes first');
+    assert.ok(card.w >= 300 && card.h > card.w * 1.3, `a picture of the A4 page: ${card.w} x ${card.h}`);
+    assert.ok(card.blue, 'the picture shows the page');
+    // A file that was moved or deleted is marked; right-click offers Open, Show in Explorer and Remove from list.
+    const gone = await page.$$eval('.recent-card', (l, p) => { const c = l.find((x) => x.dataset.path === p); return c && { missing: c.classList.contains('missing'), meta: c.querySelector('.rc-meta').textContent }; }, file('gone.pdf'));
+    assert.deepEqual(gone, { missing: true, meta: 'File not found' });
+    await page.$$eval('.recent-card', (l, p) => { const c = l.find((x) => x.dataset.path === p); const r = c.getBoundingClientRect(); c.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, clientX: r.left + 20, clientY: r.top + 20 })); }, file('gone.pdf'));
+    await page.waitForSelector('.ctx');
+    assert.deepEqual(await page.$$eval('.ctx button', (l) => l.map((b) => `${b.textContent}${b.disabled ? ' (off)' : ''}`)), ['Open (off)', `${process.platform === 'darwin' ? 'Show in Finder' : 'Show in Explorer'} (off)`, 'Remove from list']);
+    await page.click('.ctx button:has-text("Remove from list")'); await wait(300);
+    assert.equal(await page.$$eval('.recent-card', (l, p) => l.some((c) => c.dataset.path === p), file('gone.pdf')), false, 'removed from the list');
+    // Files dragged over the window light up the drop area.
+    const dragEvent = (type) => page.evaluate((t) => {
+      const dt = new window.DataTransfer(); dt.items.add(new window.File(['x'], 'x.pdf', { type: 'application/pdf' }));
+      document.body.dispatchEvent(new window.DragEvent(t, { dataTransfer: dt, bubbles: true }));
+      return document.body.classList.contains('dragging-files');
+    }, type);
+    assert.equal(await dragEvent('dragenter'), true); await wait(400);
+    assert.equal(await page.$eval('#home-drop', (e) => getComputedStyle(e).borderTopColor), 'rgb(14, 124, 134)', 'drop area lights up while files are dragged');
+    assert.equal(await dragEvent('dragleave'), false, 'and goes back when they leave');
+    // Colored tool tiles: each tool group has a color of its own.
+    const colors = await page.$$eval('#view-home .tool-card .tc-ic', (l) => l.map((e) => getComputedStyle(e).color));
+    assert.ok(colors.length >= 8 && new Set(colors).size === colors.length, `one color per tile: ${colors}`);
+    assert.equal(await page.$eval('#view-home .tool-card[data-card="edit"] .tc-ic', (e) => getComputedStyle(e).color), 'rgb(214, 51, 108)');
+    await shot('23-home');
+  });
+  step('Tools pane: colored symbols, search while typing, smooth collapse and expand', async () => {
+    await closeAll(); await openFile(file('a.pdf'));
+    await page.evaluate(() => window.__app.tools.closeGroup());
+    // The structure stays: all groups in a list. Every group has a color of its own, its tools show that color too.
+    const groups = await page.$$eval('#left-panel .lp-body .lp-item', (l) => l.map((b) => [b.dataset.group, getComputedStyle(b.querySelector('.ic')).color]));
+    assert.equal(groups.length, await page.evaluate(() => window.__app.tools.groups.filter((g) => !g.hidden).length));
+    assert.deepEqual(groups.slice(0, 2), [['edit', 'rgb(214, 51, 108)'], ['comment', 'rgb(232, 161, 12)']]);
+    assert.equal(new Set(groups.map((g) => g[1])).size, groups.length, 'one color per group');
+    await group('comment'); await wait(100);
+    assert.equal(await page.$eval('#left-panel .lp-item[data-tool="highlight"] .ic', (e) => getComputedStyle(e).color), 'rgb(232, 161, 12)');
+    await page.evaluate(() => window.__app.tools.closeGroup());
+    // The search field filters while typing: matching groups first, then the matching tools of every group.
+    const search = '#left-panel [data-tool-search]';
+    const rows = () => page.$$eval('#left-panel .lp-body .lp-item', (l) => l.map((b) => `${b.dataset.group}:${b.dataset.tool || b.dataset.action || ''}`));
+    await page.fill(search, 'water');
+    assert.deepEqual(await page.$$eval('#left-panel .lp-body .lp-item', (l) => l.map((b) => b.textContent)), ['Watermark...Edit PDF']);
+    await page.fill(search, 'sign');
+    const signs = await rows();
+    assert.ok(signs[0] === 'fillsign:' && signs.includes('certs:digital-sign') && signs.includes('fillsign:Place signature'), `groups first, then tools: ${signs}`);
+    await page.fill(search, 'xyzzy');
+    assert.match(await page.textContent('#left-panel .lp-body'), /No tool matches/);
+    // Enter runs the first tool found; Escape empties the field and all groups are back.
+    await page.fill(search, 'reverse pages'); await page.press(search, 'Enter');
+    await page.waitForSelector('.scrim'); await page.click('.scrim .btn:not(.primary)'); await wait(150);
+    assert.equal(await page.$eval(search, (e) => e.value), '', 'the field is empty again after choosing');
+    await page.fill(search, 'stamp'); await page.press(search, 'Escape');
+    assert.equal(await page.$eval(search, (e) => e.value), '');
+    assert.equal((await rows()).length, groups.length);
+    // A tool for the page opens its group with the tool chosen.
+    await page.fill(search, 'cloud'); await page.click('#left-panel .lp-item[data-tool="cloud"]'); await wait(150);
+    assert.equal(await page.evaluate(() => `${window.__app.tools.group?.id},${window.__app.overlay.tool}`), 'comment,cloud');
+    await page.evaluate(() => { window.__app.overlay.setTool('select'); window.__app.tools.closeGroup(); });
+    // Collapsing and expanding slide in both directions: halfway the pane is narrower but still there.
+    const width = () => page.$eval('#left-panel', (e) => e.getBoundingClientRect().width);
+    await run('toggle-left'); await wait(110); const out = await width(); await wait(450);
+    assert.ok(out > 5 && out < 257, `halfway while closing: ${out}`);
+    assert.deepEqual(await page.$eval('#left-panel', (e) => [e.getBoundingClientRect().width, getComputedStyle(e).visibility]), [0, 'hidden']);
+    assert.equal(await page.$eval('#quick-tools', (e) => Math.round(e.getBoundingClientRect().left - e.parentElement.getBoundingClientRect().left)), 12, 'quick tools move along');
+    await run('toggle-left'); await wait(110); const back = await width(); await wait(450);
+    assert.ok(back > 5 && back < 257, `halfway while opening: ${back}`);
+    assert.equal(await width(), 262);
+    await shot('24-tools-pane');
+    await closeAll();
   });
   step('JavaScript in forms: off blocks, on calculates', async () => {
     const { PDFName, PDFString } = require('@cantoo/pdf-lib');
@@ -1021,12 +1256,14 @@ async function invoiceFixture(name) {
     assert.equal(v[2], '', `no calculation without JavaScript: ${v}`);
     const policy = await page.evaluate(() => window.__app.policy);
     if (!policy.allowJavaScript) {
-      // IT block (default in the installed program): option grayed out, nothing turns JavaScript on.
-      assert.match(await page.$eval('#doc-banner', (e) => e.textContent), /blocked by IT\)\.$/, 'notice about IT block');
+      // Blocked (default in the installed program): option grayed out, nothing turns JavaScript on. The texts name no IT
+      // department and no registry key.
+      assert.match(await page.$eval('#doc-banner', (e) => e.textContent), /For security reasons it is not run\.$/, 'notice about the block');
       await run('preferences'); await page.waitForSelector('.dlg.pref');
       await page.click('.pref-cat[data-cat="js"]');
       assert.equal(await page.$eval('[data-pref="jsEnabled"]', (e) => e.disabled), true, 'option locked');
-      assert.match(await page.$eval('.pref-pane', (e) => e.textContent), /Blocked by IT/);
+      assert.match(await page.$eval('.pref-pane', (e) => e.textContent), /Blocked\. This feature stays off for security reasons\./);
+      assert.doesNotMatch(await page.$eval('.dlg.pref', (e) => e.textContent), /\bIT\b|HKLM|Policies/, 'no IT department, no registry key');
       await page.click('.pref-cat[data-cat="convert"]');
       assert.equal(await page.$eval('[data-pref="officeMacros"]', (e) => e.disabled), true, 'macros locked');
       await page.click('.dlg.pref .f .btn:not(.primary)'); await page.waitForSelector('.scrim', { state: 'detached' });
@@ -1273,6 +1510,61 @@ async function invoiceFixture(name) {
     await page.evaluate(() => window.__app.tools.closeGroup());
     await closeAll();
   });
+  step('Edit a block set before: nothing disappears, the field shows bold and regular parts as they are set', async () => {
+    await openFile(await editedBlockFixture('edited-block.pdf'));
+    await group('edit'); await page.waitForSelector('.eb'); await wait(300);
+    const BLOCK = 'Contract holder\nName / First name Muster Anna\nStreet Example Road 5\nCustomer no.: 4711';
+    const blocks = () => page.evaluate(async () => (await window.__app.editor.objects(0)).filter((o) => o.kind === 'text').map((o) => ({ text: o.text, complex: !!o.complex, bold: o.lines.map((l) => l.parts.map((p) => p.style.bold)) })));
+    let list = await blocks();
+    // What is left of the old text is no text: it does not split the block (editing a piece used to remove the rest).
+    assert.deepEqual(list.map((o) => o.text), [BLOCK], 'one block');
+    assert.ok(list[0].complex, 'columns and mixed weights');
+    const items = () => page.evaluate(async () => (await window.__app.doc.pageText(0)).items.filter((x) => x.str.trim()).map((x) => ({ s: x.str.trim(), x: x.transform[4], y: x.transform[5] })));
+    const before = await items();
+    // The input field shows each part in its own weight at its place.
+    const runs = () => page.$$eval('.eb-frame .eb-rich .eb-run', (els) => els.map((e) => ({ t: e.textContent.replace(/​/g, ''), w: getComputedStyle(e).fontWeight, x: e.getBoundingClientRect().left })));
+    const weights = [['Contract holder', '700'], ['Name / First name ', '700'], ['Muster Anna', '400'], ['Street ', '700'], ['Example Road 5', '400'], ['Customer no.: ', '700'], ['4711', '400']];
+    const [vx, vy] = await pagePt(0, 200, 701);
+    await page.mouse.dblclick(vx, vy); await page.waitForSelector('.eb-frame .eb-rich'); await wait(400);
+    let shown = await runs();
+    assert.deepEqual(shown.map((r) => [r.t, r.w]), weights, 'bold labels, regular values');
+    const scale = await page.evaluate(() => window.__app.viewer.scale);
+    const at = (t) => shown.find((r) => r.t === t).x;
+    assert.ok(Math.abs(at('Muster Anna') - at('Name / First name ') - 118 * scale) < 2 && Math.abs(at('Example Road 5') - at('Muster Anna')) < 1, `values in their column: ${JSON.stringify(shown)}`);
+    assert.ok(Math.abs(at('4711') - at('Customer no.: ') - (before.find((i) => i.s === '4711').x - 72) * scale) < 2, 'value right after its label');
+    await page.keyboard.press('End'); await page.keyboard.type('a');
+    let n = await page.evaluate(() => window.__app.doc.undoStack.length);
+    await page.click('#propbar .btn.primary');
+    await page.waitForFunction((k) => !window.__app.editor.input && window.__app.doc.undoStack.length > k, n, { timeout: 30000 }); await wait(800); await page.waitForSelector('.eb'); await wait(300);
+    let after = await items();
+    // Every other part stays exactly where it was (copied), the changed value keeps its column and weight.
+    for (const w of ['Contract holder', 'Name / First name', 'Muster Anna', 'Street', 'Customer no.:', '4711']) {
+      const a = before.find((i) => i.s === w); const b = after.find((i) => i.s === w);
+      assert.ok(b && Math.abs(b.x - a.x) < 0.01 && Math.abs(b.y - a.y) < 0.01, `"${w}" stays in place: ${JSON.stringify(after)}`);
+    }
+    const v = after.find((i) => i.s === 'Example Road 5a');
+    assert.ok(v && Math.abs(v.x - 190) < 0.05 && Math.abs(v.y - 698) < 0.05, `value changed in its column: ${JSON.stringify(after)}`);
+    list = await blocks();
+    assert.deepEqual(list.map((o) => o.text), [BLOCK.replace('Road 5', 'Road 5a')], 'still one block');
+    assert.deepEqual(list[0].bold, [[true], [true, false], [true, false], [true, false]], 'weights kept');
+    // Again: the field looks like the result. Enter in a value column starts a new line there; the lines below move down.
+    const [ax, ay] = await pagePt(0, 230, 712);
+    await page.mouse.dblclick(ax, ay); await page.waitForSelector('.eb-frame .eb-rich'); await wait(400);
+    shown = await runs();
+    assert.deepEqual(shown.map((r) => [r.t, r.w]), weights.map(([t, w]) => [t === 'Example Road 5' ? 'Example Road 5a' : t, w]), 'same parts after setting');
+    await page.keyboard.press('End'); await page.keyboard.press('Enter'); await page.keyboard.type('Second line');
+    n = await page.evaluate(() => window.__app.doc.undoStack.length);
+    await page.click('#propbar .btn.primary');
+    await page.waitForFunction((k) => !window.__app.editor.input && window.__app.doc.undoStack.length > k, n, { timeout: 30000 }); await wait(800); await page.waitForSelector('.eb'); await wait(300);
+    after = await items();
+    const pos = (s) => after.find((i) => i.s === s);
+    assert.ok(Math.abs(pos('Second line')?.x - 190) < 0.05 && Math.abs(pos('Second line')?.y - 698) < 0.05, `new line in the value column: ${JSON.stringify(after)}`);
+    assert.ok(Math.abs(pos('Street')?.y - 687) < 0.05 && Math.abs(pos('Customer no.:')?.y - 676) < 0.05 && Math.abs(pos('Muster Anna')?.y - 709) < 0.05, `lines below moved down: ${JSON.stringify(after)}`);
+    list = await blocks();
+    assert.deepEqual(list[0].bold, [[true], [true, false], [false], [true, false], [true, false]], 'new line in the weight of its column');
+    await page.evaluate(() => window.__app.tools.closeGroup());
+    await closeAll();
+  });
   step('Scanned invoice: recognize, search and edit text in the image', async () => {
     // Draw an invoice as a PDF and "scan" it as an image (200 dpi, JPEG), like a photo or scan of an invoice.
     const d = await PDFDocument.create(); const f = await d.embedFont(StandardFonts.Helvetica); const fb = await d.embedFont(StandardFonts.HelveticaBold);
@@ -1332,7 +1624,9 @@ async function invoiceFixture(name) {
       const data = c.getImageData(Math.round(css.left * k), Math.round(css.top * k), Math.max(1, Math.round(css.width * k)), Math.max(1, Math.round(css.height * k))).data;
       for (let q = 0; q < data.length; q += 4) { if (data[q] < 110) dark++; if (data[q] < 225) shade++; }
       let line = null;
-      if (ly !== null) { const p = v.viewport(0).convertToViewportPoint((rect[0] + rect[2]) / 2, ly); const row = c.getImageData(Math.round(p[0] * k) - 20, Math.round(p[1] * k) - 3, 40, 7).data; line = 0; for (let q = 0; q < row.length; q += 4) if (row[q] < 110) line++; }
+      // The table line is thin: at some zoom levels it falls on two rows of pixels, each only gray. A removed line
+      // would leave white paper, so anything clearly darker than paper counts.
+      if (ly !== null) { const p = v.viewport(0).convertToViewportPoint((rect[0] + rect[2]) / 2, ly); const row = c.getImageData(Math.round(p[0] * k) - 20, Math.round(p[1] * k) - 3, 40, 7).data; line = 0; for (let q = 0; q < row.length; q += 4) if (row[q] < 190) line++; }
       return { dark, shade, line };
     }, [r, lineY ?? null]);
     const underLine = await ink(amount.rect, 574);
@@ -2253,7 +2547,321 @@ async function invoiceFixture(name) {
     await page.evaluate(() => { window.__app.settings.ocrDeskew = false; });
     await closeAll();
   });
-  step('Multiple tabs and protection against data loss', async () => {
+
+  step('Reverse pages and set page boxes', async () => {
+    await openFile(file('a.pdf'));
+    await page.evaluate(() => { window.__app.tools.reversePagesDialog(); });
+    await dialog({ range: '1-4' });
+    assert.match(await page.evaluate(() => window.__app.doc.pageText(0).then((t) => t.items.map((x) => x.str).join(' '))), /page 4/);
+    await page.evaluate(() => { window.__app.tools.pageBoxesDialog(); });
+    await dialog({ box: 'TrimBox', mode: 'margins', top: 10, bottom: 10, left: 5, right: 5, range: '1' });
+    const buf = await saveAs('a-boxes.pdf');
+    const d = await PDFDocument.load(buf);
+    const t = d.getPage(0).getTrimBox();
+    assert.ok(Math.abs(t.x - 5 * 2.8346) < 0.1 && Math.abs(t.width - (595 - 10 * 2.8346)) < 0.1, `trim box ${JSON.stringify(t)}`);
+    assert.ok(!d.getPage(1).node.get(PDFName.of('TrimBox')), 'other pages keep their boxes');
+    const pdf = await open(buf);
+    assert.match(await textOf(pdf, 1), /page 4/); assert.match(await textOf(pdf, 4), /page 1/);
+    await closeAll();
+  });
+  step('Export as Markdown and export all images', async () => {
+    await openFile(file('a.pdf'));
+    await setDialogs({ save: file('e.md') });
+    await page.evaluate(() => window.__app.tools.exportAs('md')); await idle(); await wait(100);
+    const md = fs.readFileSync(file('e.md'), 'utf8');
+    assert.match(md, /^# DocPilot test document page 1$/m, 'the large title is a heading');
+    assert.match(md, /^This is the first paragraph with some text to mark up\./m);
+    await closeAll();
+    const d = await PDFDocument.create();
+    const png = await d.embedPng(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFklEQVR4nGP8z8DAwMDAxMDAwMDAAAANHQEDasKb6QAAAABJRU5ErkJggg==', 'base64'));
+    for (let i = 0; i < 2; i++) d.addPage([300, 300]).drawImage(png, { x: 20, y: 20, width: 100, height: 100 });
+    fs.writeFileSync(file('img.pdf'), await d.save());
+    await openFile(file('img.pdf'));
+    const dir = path.join(work, 'images-out'); fs.mkdirSync(dir, { recursive: true });
+    await app.evaluate(({ dialog: dl }, x) => { dl.showOpenDialog = async () => ({ canceled: false, filePaths: [x] }); }, dir);
+    await app.evaluate(({ shell }) => { shell.openPath = async () => ''; });
+    await page.evaluate(() => { window.__app.tools.exportImages(); });
+    await dialog({ minSide: 1 });
+    await idle(); await wait(300);
+    assert.deepEqual(fs.readdirSync(dir), ['img_P001_1.png'], 'the image used on both pages is saved once');
+    assert.deepEqual([...fs.readFileSync(path.join(dir, 'img_P001_1.png')).subarray(1, 4)].map((c) => String.fromCharCode(c)).join(''), 'PNG');
+    await closeAll();
+  });
+  step('Print: several pages per sheet, booklet, custom scale, form fields only', async () => {
+    await openFile(file('a.pdf'));
+    await page.evaluate(() => { window.__app.run('print'); });
+    await page.waitForSelector('.scrim [data-field="layout"]');
+    await field('layout', 'multiple');
+    assert.ok(await page.isVisible('.scrim [data-field="perSheet"]'), 'pages per sheet shown for several pages per sheet');
+    assert.ok(!(await page.isVisible('.scrim [data-field="scale"]')), 'scale hidden');
+    await page.click('.scrim .btn:not(.primary)'); await wait(150);
+    const base = { which: 'all', range: '', subset: 'all', reverse: false, paper: 'a4', orient: 'auto', color: 'color', duplex: 'simplex', content: 'doc', dpi: 72, copies: 1, fit: 'fit', scale: 100, perSheet: 2, order: 'horizontal', border: false, bookletSubset: 'both', binding: 'left' };
+    const sheets = (o) => page.evaluate(async (x) => { const r = await window.__app.print(x, { toPdf: true }); return Array.from(r.pdf); }, { ...base, ...o });
+    const pages = async (o) => (await open(Buffer.from(await sheets(o)))).numPages;
+    assert.equal(await pages({ layout: 'multiple', perSheet: 4, border: true }), 1, '4 pages on one sheet');
+    assert.equal(await pages({ layout: 'booklet' }), 2, 'booklet of 4 pages: one sheet, both sides');
+    assert.equal(await pages({ layout: 'size', fit: 'custom', scale: 50, which: 'range', range: '1-3' }), 3);
+    assert.equal(await pages({ layout: 'size', content: 'fields', which: 'current' }), 1);
+    await closeAll();
+  });
+  step('Print production: grayscale, hairlines, printer marks', async () => {
+    await openFile(file('a.pdf'));
+    await page.evaluate(() => { window.__app.tools.grayscaleDialog(); });
+    await dialog({});
+    await page.evaluate(() => { window.__app.tools.hairlinesDialog(); });
+    await dialog({ narrower: 0.3, width: 0.6 });
+    await page.evaluate(() => { window.__app.tools.printerMarksDialog(); });
+    await dialog({ colorBars: false, range: '1-2' });
+    const buf = await saveAs('a-prepress.pdf');
+    const pdf = await open(buf);
+    const ol = await (await pdf.getPage(3)).getOperatorList(); // page 3 has no printer marks (registration colour is not gray)
+    const fills = ol.fnArray.map((fn, i) => (fn === pdfjs.OPS.setFillRGBColor ? ol.argsArray[i][0] : null)).filter(Boolean);
+    assert.ok(fills.length && fills.every((c) => (typeof c === 'string' ? c.slice(1, 3) === c.slice(3, 5) && c.slice(3, 5) === c.slice(5, 7) : c[0] === c[1] && c[1] === c[2])), `all fills gray: ${fills}`);
+    assert.match(await textOf(pdf, 2), /2 of 4/, 'page information line');
+    assert.doesNotMatch(await textOf(pdf, 3), / of 4/, 'only the chosen pages');
+    const d = await PDFDocument.load(buf);
+    assert.ok(d.getPage(0).getMediaBox().width > 595 && d.getPage(0).getTrimBox().width === 595, 'page enlarged, trim box kept');
+    await page.evaluate(() => { window.__app.tools.printerMarksDialog(); });
+    await choose('Update');
+    assert.equal(await page.isChecked('.scrim [data-field="colorBars"]'), false, 'the marks dialog opens with the settings used');
+    await page.click('.scrim .btn:not(.primary)'); await wait(150);
+    await closeAll();
+  });
+  step('Measure: snap to the corners of a rectangle, export measurements as CSV', async () => {
+    await openFile(file('a.pdf'));
+    await tool('measure-dist');
+    await page.waitForFunction(() => !!window.__app.tools.snapGeom(0), null, { timeout: 10000 });
+    // The blue rectangle of the fixture runs from (72, 420) to (292, 540): the drag starts and ends a little off its corners.
+    await drag(0, [74.5, 422.5], [289.5, 537.5]);
+    await wait(300);
+    const dist = await page.evaluate(() => window.__app.doc.allAnnots().find((a) => a.subject === 'Distance')?.contents);
+    assert.equal(dist, `Distance: ${(Math.hypot(220, 120) / 2.834645669).toLocaleString('en-GB', { maximumFractionDigits: 2 })} mm`, 'snapped to both corners');
+    await page.evaluate(() => window.__app.overlay.setTool('select'));
+    await setDialogs({ save: file('m.csv') });
+    await page.evaluate(() => window.__app.tools.exportMeasurements()); await wait(300);
+    const csv = fs.readFileSync(file('m.csv'), 'utf8');
+    assert.match(csv, /^﻿Page,Index,Type,Value,Unit,Label,Author\r\n1,1,distance,88\.4\d*,"mm"/);
+    await closeAll();
+  });
+  step('Fill and sign: line; Create PDF: several files as separate PDFs', async () => {
+    await openFile(file('a.pdf'));
+    await group('fillsign');
+    await page.click('#left-panel .lp-item[data-tool="fs-line"]');
+    await drag(0, [100, 300], [250, 300]);
+    const line = await page.evaluate(() => window.__app.doc.allAnnots().find((a) => a.type === 'line'));
+    assert.ok(line && Math.abs(line.points[0][1] - line.points[1][1]) < 2 && line.points[1][0] - line.points[0][0] > 140, 'a line from the drag');
+    const buf = await saveAs('a-line.pdf');
+    const ann = await (await (await open(buf)).getPage(1)).getAnnotations();
+    assert.ok(ann.some((a) => a.subtype === 'Line'));
+    await page.evaluate(() => window.__app.tools.closeGroup());
+    await closeAll();
+    fs.writeFileSync(file('one.txt'), 'First text file'); fs.writeFileSync(file('two.txt'), 'Second text file');
+    const out = path.join(work, 'separate'); fs.mkdirSync(out, { recursive: true });
+    await app.evaluate(({ dialog: dl }, [files, dir]) => { let k = 0; dl.showOpenDialog = async () => (k++ === 0 ? { canceled: false, filePaths: files } : { canceled: false, filePaths: [dir] }); }, [[file('one.txt'), file('two.txt')], out]);
+    await app.evaluate(({ shell }) => { shell.openPath = async () => ''; });
+    await page.evaluate(() => window.__app.tools.createSeparate()); await idle(); await wait(300);
+    assert.deepEqual(fs.readdirSync(out).sort(), ['one.pdf', 'two.pdf']);
+    assert.match(await textOf(await open(fs.readFileSync(path.join(out, 'two.pdf'))), 1), /Second text file/);
+  });
+  step('App: reopen closed tab, show in Explorer, search commands, thumbnail size, bookmark search, fonts, autosave and recovery', async () => {
+    await openFile(file('a.pdf'));
+    // Show in Explorer.
+    await app.evaluate(({ shell }) => { global.revealed = null; shell.showItemInFolder = (p) => { global.revealed = p; }; });
+    await run('reveal'); await wait(200);
+    assert.equal(await app.evaluate(() => global.revealed), file('a.pdf'));
+    // Reopen closed tab.
+    await closeAll();
+    await run('reopen-closed'); await rendered();
+    assert.equal(await page.evaluate(() => window.__app.doc?.name), 'a.pdf');
+    // Search commands: typing and Enter runs the tool.
+    await run('command-palette');
+    await page.waitForSelector('.palette [data-palette-input]');
+    await page.fill('.palette [data-palette-input]', 'grayscale');
+    assert.equal(await page.textContent('.palette .pal-item.sel .l'), 'Convert to grayscale');
+    await page.press('.palette [data-palette-input]', 'Enter');
+    await page.waitForSelector('.scrim h3:text-is("Convert to grayscale")');
+    await page.click('.scrim .btn:not(.primary)'); await wait(150);
+    // Thumbnail size.
+    await run('panel', 'thumbs'); await page.waitForSelector('#right-panel [data-thumb-size]');
+    await page.$eval('#right-panel [data-thumb-size]', (e) => { e.value = '80'; e.dispatchEvent(new Event('change')); });
+    await wait(300);
+    assert.equal(await page.evaluate(() => window.__app.settings.thumbSize), 80);
+    assert.equal(await page.$eval('#right-panel .thumb', (e) => Math.round(e.firstElementChild.getBoundingClientRect().width)), 80);
+    // Bookmark search: matches stay visible with the bookmarks above them.
+    await page.evaluate(() => window.__app.panels.saveOutline([{ title: 'Chapter one', page: 0, children: [{ title: 'Details', page: 1, children: [] }] }, { title: 'Appendix', page: 2, children: [] }]));
+    await run('panel', 'bookmarks'); await page.waitForSelector('#right-panel [data-bm-search]');
+    await page.fill('#right-panel [data-bm-search]', 'details');
+    const visible = await page.$$eval('#right-panel .tree li', (l) => l.filter((x) => !x.hidden && x.offsetParent).map((x) => x.querySelector('.lb').textContent));
+    assert.deepEqual(visible, ['Chapter one', 'Details']);
+    // Fonts in Document properties.
+    await run('properties'); await page.waitForSelector('.scrim .fonts-list');
+    assert.ok(+(await page.getAttribute('.scrim .fonts-list', 'data-fonts')) >= 2);
+    assert.match(await page.textContent('.scrim .fonts-list'), /Helvetica-Bold.*Type 1.*Not embedded/s);
+    await page.click('.scrim .btn:not(.primary)'); await wait(150);
+    // Autosave: a copy of the unsaved document; after a "crash" it is offered for recovery.
+    await page.evaluate(() => window.__app.overlay.add({ type: 'note', page: 0, rect: [100, 600, 120, 620], icon: 'Comment', contents: 'Not saved yet', color: [1, 0.8, 0] }));
+    assert.equal(await page.evaluate(() => window.__app.autosave.tick(true)), 1);
+    const dir = path.join(work, 'userdata', 'autosave');
+    const copies = fs.readdirSync(dir);
+    assert.equal(copies.filter((x) => x.endsWith('.pdf')).length, 1);
+    const saved = Object.fromEntries(copies.map((x) => [x, fs.readFileSync(path.join(dir, x))]));
+    await closeAll();
+    assert.deepEqual(fs.readdirSync(dir), [], 'closing removes the copy');
+    for (const [n, b] of Object.entries(saved)) fs.writeFileSync(path.join(dir, `old-${n.replace(/^[^-]+-/, '')}`), b);
+    await page.evaluate(() => { window.__app.autosave.offerRecovery(); });
+    await choose('Recover'); await rendered(); await wait(300);
+    const rec = await page.evaluate(() => ({ name: window.__app.doc.name, dirty: window.__app.doc.dirty, notes: window.__app.doc.allAnnots().map((a) => a.contents) }));
+    assert.deepEqual(rec, { name: 'a.pdf', dirty: true, notes: ['Not saved yet'] });
+    // The recovered document is unsaved again, so a new copy of it may already be there: only the old copies must be gone.
+    assert.deepEqual(fs.readdirSync(dir).filter((x) => x.startsWith('old-')), [], 'the recovered copies are removed');
+    await run('panel', 'thumbs'); await page.evaluate(() => { window.__app.panels.hide(); window.__app.settings.thumbSize = 150; });
+    await closeAll();
+  });
+  step('Accessibility: tag automatically, Tags panel, alternate text, check report with fixes', async () => {
+    await openFile(file('img.pdf'));
+    await page.evaluate(() => { window.__app.tools.accessCheck(); });
+    await page.waitForSelector('.scrim .access-report');
+    assert.equal(await page.getAttribute('.scrim [data-rule="tagged-pdf"]', 'data-status'), 'failed');
+    assert.equal(await page.getAttribute('.scrim [data-rule="reading-order"]', 'data-status'), 'manual');
+    await page.click('.scrim [data-rule="tagged-pdf"] .btn'); // "Tag": closes the report and opens the tagging dialog
+    await page.waitForSelector('.scrim h3:text-is("Automatically tag document")');
+    await ok(); await wait(400);
+    await page.waitForSelector('#right-panel [data-tag-type="Figure"]');
+    assert.ok(await page.$('#right-panel [data-tag-type="Document"]'));
+    // Alternate text for the image (used on both pages: two figures).
+    await page.evaluate(() => { window.__app.tools.altTextDialog(); });
+    await page.waitForSelector('.scrim textarea[data-alt-ref]');
+    const n = await page.$$eval('.scrim textarea[data-alt-ref]', (l) => l.length);
+    assert.equal(n, 2);
+    for (const t of await page.$$('.scrim textarea[data-alt-ref]')) await t.fill('Small coloured square');
+    await page.click('.scrim [role="alertdialog"] .btn.primary'); await idle(); await wait(300);
+    await page.evaluate(() => { window.__app.tools.titleLang(); });
+    await dialog({ title: 'Image test', lang: 'en-GB' });
+    await page.evaluate(() => { window.__app.tools.accessCheck(); });
+    await page.waitForSelector('.scrim .access-report');
+    for (const id of ['tagged-pdf', 'tagged-content', 'figures-alt', 'title', 'language']) assert.equal(await page.getAttribute(`.scrim [data-rule="${id}"]`, 'data-status'), 'passed', id);
+    await page.click('.scrim .btn.primary'); await wait(150);
+    // Change a tag in the Tags panel.
+    await wait(600); await page.waitForSelector('#right-panel [data-tag-type="Figure"]');
+    await page.click('#right-panel [data-tag-type="Figure"]');
+    await page.waitForFunction(() => window.__app.panels.selTagNode?.type === 'Figure');
+    await page.evaluate(() => { window.__te = window.__app.panels.tagEdit(); });
+    await page.waitForSelector('.scrim [data-field="type"]');
+    assert.equal(await page.inputValue('.scrim [data-field="alt"]'), 'Small coloured square');
+    await dialog({ type: 'Figure', alt: 'A square' });
+    const buf = await saveAs('img-tagged.pdf');
+    const pdf = await open(buf);
+    const tree = await (await pdf.getPage(1)).getStructTree();
+    const alts = []; const walk = (x) => { if (x.alt) alts.push(x.alt); (x.children || []).forEach(walk); }; walk(tree);
+    assert.ok(alts.includes('A square') || alts.includes('Small coloured square'), `alternate text in the file: ${alts}`);
+    assert.equal((await pdf.getMetadata()).info.Title, 'Image test');
+    await page.evaluate(() => window.__app.panels.hide());
+    await closeAll();
+  });
+  step('Scan & OCR: several files, review recognized text, enhance scans, straighten a photo', async () => {
+    // Two files at once: an image and a PDF made from it; both become searchable PDFs in a folder.
+    const b2 = await page.evaluate(() => { const c = document.createElement('canvas'); c.width = 1240; c.height = 1754; const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height); x.fillStyle = '#000'; x.font = '56px Arial'; x.fillText('Second scanned letter', 120, 260); x.fillText('Invoice number 4711', 120, 360); return c.toDataURL('image/png').split(',')[1]; });
+    fs.writeFileSync(file('scan2.png'), Buffer.from(b2, 'base64'));
+    const out = path.join(work, 'ocr-out'); fs.mkdirSync(out, { recursive: true });
+    await app.evaluate(({ dialog: dl }, [files, dir]) => { let k = 0; dl.showOpenDialog = async () => (k++ === 0 ? { canceled: false, filePaths: files } : { canceled: false, filePaths: [dir] }); }, [[file('scan.png'), file('scan2.png')], out]);
+    await app.evaluate(({ shell }) => { shell.openPath = async () => ''; });
+    await page.evaluate(() => { window.__run = window.__app.tools.ocrFiles(); });
+    await page.waitForSelector('.scrim [data-field="lang"]'); await page.click('.scrim [data-ok]');
+    await page.evaluate(() => window.__run); await idle(); await wait(300);
+    assert.deepEqual(fs.readdirSync(out).sort(), ['scan2_OCR.pdf', 'scan_OCR.pdf']);
+    assert.match(await textOf(await open(fs.readFileSync(path.join(out, 'scan2_OCR.pdf'))), 1), /4711/);
+    assert.equal(await page.evaluate(() => window.__app.docs.length), 0, 'the files are closed again');
+    // Review: every recognized word with its picture; a correction replaces the word in the text layer.
+    await setDialogs({ open: [file('scan2.png')] });
+    await page.evaluate(() => window.__app.tools.createFromFile()); await idle();
+    await page.waitForFunction(() => window.__app.doc?.name === 'scan2.pdf'); await rendered();
+    await page.waitForFunction(() => window.__app.doc.ocrWords?.size > 0, null, { timeout: 120000 });
+    await page.evaluate(() => { window.__app.tools.ocrReview(); });
+    await dialog({ limit: 101 });
+    await page.waitForSelector('.scrim .ocr-review input');
+    const words = await page.$$eval('.scrim .ocr-review input', (l) => l.map((i) => i.value));
+    assert.ok(words.includes('Second'), `words: ${words}`);
+    const k = words.indexOf('Second');
+    await (await page.$$('.scrim .ocr-review input'))[k].fill('Third');
+    await page.click('.scrim [role="alertdialog"] .btn.primary'); await idle(); await wait(300);
+    assert.match(await page.evaluate(() => window.__app.doc.pageText(0).then((t) => t.items.map((x) => x.str).join(' '))), /Third scanned letter/);
+    // Enhance: black and white, in the same image; the recognized text stays.
+    await page.evaluate(() => { window.__app.tools.enhanceScanDialog(); });
+    await dialog({ mode: 'bw' }); await wait(300);
+    const buf = await saveAs('scan2-bw.pdf');
+    const d = await PDFDocument.load(buf);
+    const xo = d.getPage(0).node.Resources().lookup(PDFName.of('XObject'));
+    const im = d.context.lookup(xo.get(xo.keys()[0]));
+    assert.equal(im.dict.get(PDFName.of('BitsPerComponent')).toString(), '1');
+    assert.match(await textOf(await open(buf), 1), /Invoice number 4711/);
+    await closeAll();
+    // A phone photo: a white sheet at an angle on a grey table.
+    const photo = await page.evaluate(() => {
+      const c = document.createElement('canvas'); c.width = 1000; c.height = 1300; const x = c.getContext('2d');
+      x.fillStyle = '#6a6a6a'; x.fillRect(0, 0, c.width, c.height);
+      x.fillStyle = '#f4f4f4'; x.beginPath(); x.moveTo(170, 120); x.lineTo(860, 170); x.lineTo(900, 1180); x.lineTo(120, 1130); x.closePath(); x.fill();
+      return c.toDataURL('image/png').split(',')[1];
+    });
+    fs.writeFileSync(file('photo.png'), Buffer.from(photo, 'base64'));
+    // The photo has no text: no automatic recognition (Tesseract would only report the table edges as unreadable lines).
+    await page.evaluate(() => { window.__app.settings.ocrOnCreate = false; window.__app.settings.ocrOnOpen = 'never'; });
+    await setDialogs({ open: [file('photo.png')] });
+    await page.evaluate(() => window.__app.tools.createFromFile()); await idle();
+    await page.waitForFunction(() => window.__app.doc?.name === 'photo.pdf'); await rendered(); await wait(500);
+    const before = await page.evaluate(() => window.__app.doc.pages[0].view);
+    await page.evaluate(() => { window.__p = window.__app.tools.perspectiveDialog(); });
+    await page.waitForSelector('.scrim .pq-stage');
+    assert.match(await page.textContent('.scrim [role="alertdialog"] p'), /were found/, 'the corners are found');
+    await page.click('.scrim [role="alertdialog"] .btn.primary');
+    assert.equal(await page.evaluate(() => window.__p), true); await idle(); await wait(300);
+    const after = await page.evaluate(() => window.__app.doc.pages[0].view);
+    assert.ok(after[2] / after[3] < before[2] / before[3] - 0.01 || Math.abs(after[2] - before[2]) > 5, `page size changed: ${before} -> ${after}`);
+    await page.evaluate(() => { window.__app.settings.ocrOnCreate = true; window.__app.settings.ocrOnOpen = 'ask'; });
+    await closeAll();
+  });
+  step('Action wizard: choose and edit an action, run steps on several files', async () => {
+    await run('action-wizard');
+    await page.waitForSelector('.scrim [data-aw-action]');
+    await page.selectOption('.scrim [data-aw-action]', { label: 'Add page numbers' });
+    assert.equal(await page.$$eval('.scrim .aw-step', (l) => l.length), 1);
+    await page.selectOption('.scrim [data-aw-add]', 'add_watermark');
+    assert.equal((await page.$$eval('.scrim .aw-step', (l) => l.map((x) => x.dataset.step))).join(','), 'add_footer,add_watermark', 'the step is added');
+    await choose('Cancel');
+    const out = path.join(work, 'action-out'); fs.mkdirSync(out, { recursive: true });
+    const res = await page.evaluate(([files, dir]) => window.__app.tools.runAction([{ step: 'add_footer', arg: 'Page {page} of {pages}' }, { step: 'add_watermark', arg: 'BATCH' }, { step: 'grayscale' }, { step: 'auto_tag' }], files, dir), [[file('a.pdf'), file('img.pdf')], out]);
+    assert.equal(res.map((r) => r.error || '-').join(','), '-,-', JSON.stringify(res));
+    assert.deepEqual(fs.readdirSync(out).sort(), ['a.pdf', 'img.pdf']);
+    const t = await textOf(await open(fs.readFileSync(path.join(out, 'a.pdf'))), 2);
+    assert.match(t, /BATCH/); assert.match(t, /Page 2 of 4/);
+    assert.ok(fs.statSync(file('a.pdf')).size > 0 && !(await textOf(await open(fs.readFileSync(file('a.pdf'))), 1)).includes('BATCH'), 'the original stays unchanged');
+    const tagged = await (await (await open(fs.readFileSync(path.join(out, 'img.pdf')))).getPage(1)).getStructTree();
+    assert.ok(tagged, 'tagged');
+    await closeAll();
+  });
+  step('XFA form: banner, convert into pages and form fields', async () => {
+    const template = '<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/"><subform name="form1" layout="tb"><pageSet><pageArea name="P"><contentArea x="0.5in" y="0.5in" w="7.5in" h="10in"/><medium short="8.5in" long="11in"/></pageArea></pageSet>'
+      + '<subform name="s" layout="position" w="7.5in" h="2in"><draw name="t" x="0" y="0" w="4in" h="0.4in"><value><text>Order form</text></value><font size="14pt" weight="bold"/></draw>'
+      + '<field name="Customer" x="0" y="0.6in" w="4in" h="0.3in"><ui><textEdit/></ui><caption reserve="1in"><value><text>Customer</text></value></caption></field></subform></subform></template>';
+    const datasets = '<xfa:datasets xmlns:xfa="http://www.xfa.org/schema/xfa-data/1.0/"><xfa:data><form1><s><Customer>Example Ltd</Customer></s></form1></xfa:data></xfa:datasets>';
+    const d = await PDFDocument.create();
+    d.addPage([612, 792]).drawText('Please wait...', { x: 50, y: 700, size: 12, font: await d.embedFont(StandardFonts.Helvetica) });
+    const enc = (t) => d.context.register(d.context.flateStream(Buffer.from(t)));
+    const { PDFString } = require('@cantoo/pdf-lib');
+    d.catalog.set(PDFName.of('AcroForm'), d.context.obj({ Fields: [], XFA: [PDFString.of('template'), enc(template), PDFString.of('datasets'), enc(datasets)] }));
+    d.catalog.set(PDFName.of('NeedsRendering'), d.context.obj(true));
+    fs.writeFileSync(file('xfa.pdf'), await d.save());
+    await openFile(file('xfa.pdf'));
+    await page.waitForSelector('#doc-banner .btn:text-is("Convert form")');
+    await page.click('#doc-banner .btn:text-is("Convert form")');
+    await choose('Convert'); await idle(); await wait(400);
+    assert.ok(await page.evaluate(() => document.getElementById('doc-banner').hidden || !/XFA/.test(document.getElementById('doc-banner').textContent)), 'the banner is gone');
+    const buf = await saveAs('xfa-converted.pdf');
+    const pdf = await open(buf);
+    assert.match(await textOf(pdf, 1), /Order form/);
+    const ann = await (await pdf.getPage(1)).getAnnotations();
+    assert.equal(ann.find((a) => a.fieldName === 'form1.s.Customer')?.fieldValue, 'Example Ltd');
+    await closeAll();
+  });  step('Multiple tabs and protection against data loss', async () => {
     await openFile(file('a.pdf')); await openFile(file('a-wm.pdf'));
     assert.equal(await page.$$eval('#tabs .tab[data-doc]', (e) => e.length), 2);
     await tool('rect'); await drag(0, [100, 100], [200, 200]);

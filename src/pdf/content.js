@@ -305,6 +305,8 @@ export function interpret(page, opts = {}) {
       // Everything needed to draw the item again elsewhere (matrices and arrays are replaced, never changed).
       state: { ctm, tm, font: st.font, size: st.size, tc: st.tc, tw: st.tw, th: st.th, rise: st.rise, tr: st.tr, fillOps: st.fillOps, strokeOps: st.strokeOps, lw: st.lw, gs: st.gs },
       segments, adv,
+      // Shows no glyph at all, only moves on (e.g. what removeTextItems leaves of removed text): not text.
+      empty: !segments.some((s) => typeof s !== 'number' && s.length),
     });
     tm = mul([1, 0, 0, 1, adv, 0], tm);
   };
@@ -420,7 +422,7 @@ export function textCopyOperators(ctx, items, dx = 0, dy = 0, endCtm = [1, 0, 0,
 export function removeTextItems(page, r, items, mark = null) {
   const set = new Set(items);
   const edits = [];
-  const whole = mark ? r.spans.filter((s) => s.id === mark && r.items.every((it) => it.kind !== 'text' || it.mark !== mark || set.has(it))) : [];
+  const whole = mark ? r.spans.filter((s) => s.id === mark && r.items.every((it) => it.kind !== 'text' || it.mark !== mark || it.empty || set.has(it))) : [];
   const inWhole = (it) => whole.some((s) => it.op.start >= s.start && it.op.end <= s.end);
   for (const s of whole) edits.push({ start: s.start, end: s.end, text: ' ' });
   for (const it of items) {
@@ -436,9 +438,19 @@ export function removeTextItems(page, r, items, mark = null) {
   return edits.length;
 }
 
-/** Text items of a block: those of its editor marker, or the unmarked ones that lie mostly within rect. */
+/**
+ * Text items of a block: those of its editor marker (or the unmarked ones) that lie mostly within rect. A block can
+ * be only a part of an editor block; then the rest of that editor block stays where it is.
+ */
 export function blockTextItems(r, rect, mark) {
-  return r.items.filter((it) => it.kind === 'text' && (mark ? it.mark === mark : !it.mark && overlapShare(it.bbox, rect) >= 0.5));
+  return r.items.filter((it) => it.kind === 'text' && !it.empty && (mark ? it.mark === mark && (isRecognized(r, mark) || inBlock(it.bbox, rect)) : !it.mark && overlapShare(it.bbox, rect) >= 0.5));
+}
+/** A recognized paragraph (text recognition) always stays one block. */
+const isRecognized = (r, mark) => mark.startsWith('ocr') || !!r.ocr?.has(mark);
+/** Text item of an editor block within the rectangle of a block: lies mostly within it, or its center does. */
+function inBlock(b, rect) {
+  const cx = (b[0] + b[2]) / 2; const cy = (b[1] + b[3]) / 2;
+  return overlapShare(b, rect) >= 0.5 || (cx >= rect[0] && cx <= rect[2] && cy >= rect[1] && cy <= rect[3]);
 }
 
 /** Parts of a rectangle a outside of b (up to four rectangles). */
@@ -529,17 +541,22 @@ const overlapShare = (b, r) => {
 
 /**
  * Removes text whose area lies mostly within the rectangles. Returns the number of removed operators.
- * With opts.mark only a specific text block is removed: a marker removes exactly the text marked with it
- * (regardless of what lies below), null only removes unmarked text in the rectangle.
+ * With opts.mark only a specific text block is removed: a marker removes exactly the text marked with it that lies
+ * in the rectangles (regardless of what lies below), null only removes unmarked text in the rectangle.
  */
 export function removeTextInPage(page, rects, opts = {}) {
-  const { bytes, items, spans } = interpret(page);
+  const r = interpret(page);
+  const { bytes, items, spans } = r;
   const byMark = 'mark' in opts;
-  // An editor text block is removed entirely (BDC to EMC), including its background.
   if (byMark && opts.mark) {
+    const mine = items.filter((it) => it.kind === 'text' && it.mark === opts.mark && !it.empty);
+    const inside = isRecognized(r, opts.mark) ? mine : mine.filter((it) => rects.some((q) => inBlock(it.bbox, q)));
+    // The rectangles cover only a part of the editor text block (e.g. one of its lines): only that part is
+    // removed, the rest stays exactly where it is.
+    if (inside.length && inside.length < mine.length) return removeTextItems(page, r, inside, opts.mark);
+    // An editor text block is removed entirely (BDC to EMC), including its background.
     const own = spans.filter((s) => s.id === opts.mark);
-    const n = items.filter((it) => it.kind === 'text' && it.mark === opts.mark).length;
-    if (own.length && n) { rewrite(page, bytes, own.map((s) => ({ start: s.start, end: s.end, text: ' ' }))); return n; }
+    if (own.length && mine.length) { rewrite(page, bytes, own.map((s) => ({ start: s.start, end: s.end, text: ' ' }))); return mine.length; }
   }
   const edits = [];
   for (const it of items) {

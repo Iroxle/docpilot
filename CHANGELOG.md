@@ -2,6 +2,78 @@
 
 All notable changes to DocPilot are listed here, newest first.
 
+## 1.2.0 (2026-11-27)
+
+### New
+
+- **New look: tabs in the title bar.** One bar at the top holds the tabs, the menu (☰, also with Alt or F10) and a
+  search field for all tools and commands (Ctrl+Shift+P); the window buttons match the light or dark appearance. On a
+  Mac the three window buttons sit at the left of the bar and the menu stays in the macOS menu bar.
+- **New home page:** drop a PDF on the large area or open one; recent files appear as pictures of their first page
+  (the full path shows when the mouse rests on a picture, right-click to remove one); compact, colored tiles lead to
+  the main tools.
+- **Tools pane:** every tool group has a color of its own, a search field at the top filters groups and tools while
+  typing (Enter runs the first one), and the pane slides in and out instead of disappearing at once.
+- **Change or remove header and footer, watermark, background and Bates numbers.** When a document already has
+  them, the tool offers Update (the dialog opens with the settings they were made with), Remove, or Add another.
+  They are stored as marks of their own in the page, so removing them leaves the page content as it was.
+  Watermarks can lie behind the page content.
+- **Reverse pages** (Organize pages, also for the selected thumbnails) and **Set page boxes** (crop, bleed, trim,
+  art and media box from margins, or back to their default) under Print production.
+- **Export all images** (JPEG images unchanged, other images as PNG with their transparency, each image once) and
+  **export as Markdown** (headings from the font size, bold and italic, lists and tables).
+- **Print several pages per sheet** (2, 4, 6, 9 or 16, in rows or columns, with page borders), **booklets** (bound on
+  the left or right, both sides or one side at a time), **custom scale** and **shrink oversized pages**, paper size,
+  reverse order, and **print form fields only**.
+- **Print production:** convert to grayscale (text, graphics, images, comments), fix hairlines (lines thinner than a
+  printer holds get a chosen width), and printer marks (trim and bleed marks, registration targets, colour bars and
+  page information; the page grows to make room, the trim box stays; can be updated or removed later).
+- **Measure:** the measure tools snap to the end points, middles and crossings of the lines on the page, and to the
+  lines themselves (can be turned off). Measurements can be exported as a CSV file.
+- **Fill and sign:** new "Line" tool.
+- **Create PDF from several files as separate PDFs**, one PDF per file in a chosen folder.
+- **Reopen closed tab** (Ctrl+Shift+T), **Show in Explorer** (File menu and tab menu), **Search commands**
+  (Ctrl+Shift+P: every tool and command by name), **search bookmarks**, **adjustable thumbnail size**, and the
+  **fonts of the document** (type and embedding) in Document properties.
+- **Recovery after a crash:** documents with unsaved changes are copied every few minutes (Preferences > Documents)
+  and offered for recovery when DocPilot was not closed properly. Password-protected documents are not copied.
+- **Accessibility:** "Automatically tag document" gives untagged PDFs a structure (headings and paragraphs from the
+  size and weight of the text, figures, decoration marked as such, form fields and links). New Tags panel (change a
+  tag's type and alternate text), "Alternate text for images" with a picture of every image, "Tag form fields and
+  links", and a full accessibility check of 32 rules with a fix button where DocPilot has one.
+- **Scan & OCR:** recognize text in several files at once (saved as searchable PDFs in a folder), enhance scanned
+  pages (white paper, stronger contrast, fewer specks, or black and white; recognized text stays), straighten phone
+  photos of documents (the sheet's corners are found and can be moved), and review recognized text: the uncertain
+  words with their picture, to correct them.
+- **Action wizard:** run a sequence of steps (recognize text, enhance scans, reduce file size, remove hidden
+  information, flatten, watermark, header, footer, title, grayscale, hairlines, tagging, PDF/A) on several files.
+  Six actions are built in; your own actions are saved.
+- **XFA forms** are converted into normal pages and form fields with their data, so they can be filled in, saved and
+  printed anywhere. DocPilot offers this when such a form is opened.
+
+### Improved
+
+- Finer details everywhere: the same rounded corners and spacing, softer shadows, thin scroll bars, a sidebar on the
+  right that slides in and out, and panels without content (comments, bookmarks, attachments, layers, signatures,
+  tags, search results) say what to do.
+- Options that are blocked for security reasons (JavaScript in PDFs, macros in Office files) simply say "Blocked".
+- Dark appearance: text on buttons in the accent color is dark, so it is easy to read.
+- **Edit PDF: the text field looks like the result.** In a paragraph with columns or mixed formats (e.g. a bold
+  label and its value), every part keeps its font, weight, size, color and place while typing, and the paragraph is
+  set exactly as shown. Parts that stay unchanged keep their original glyphs (bullets, spacing). Select a word and
+  press Bold, Italic or another format to change only that word; Ctrl+Z undoes typing in the field; Tab jumps to the
+  next column.
+
+### Fixed
+
+- **Edit PDF: edited text no longer disappears.** In a document that had been edited and saved before, changing
+  one line of a paragraph could remove the other lines of that paragraph.
+- **Check boxes and radio buttons in PDF forms** show again whether they are checked, also right after a click. In
+  1.1.0 they looked empty, although the value was saved. Page thumbnails show the current values of the form fields.
+- Detect fields automatically: labels in letter-spaced type ("F U L L  N A M E") give the field name "FULL NAME".
+- The page range fields showed the example in German ("z.B. 1-3, 5"), and Advanced search had a German option name.
+- Sanitize document: the option for links was labelled "Left".
+
 ## 1.1.0 (2026-11-26)
 
 ### New
